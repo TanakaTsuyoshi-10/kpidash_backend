@@ -829,13 +829,20 @@ async def import_channel_data(
             "channel": channel,
             "sales": record.get("売上高") or record.get("sales"),
             "buyers": record.get("購入者数") or record.get("buyers"),
+            "is_target": False,  # 実績データとして登録
         }
 
-        # Upsert
-        response = supabase.table("ecommerce_channel_sales").upsert(
-            data,
-            on_conflict="month,channel"
-        ).execute()
+        # 既存の実績データをチェックして更新または挿入
+        existing = supabase.table("ecommerce_channel_sales").select("id").eq(
+            "month", month.isoformat()
+        ).eq("channel", channel).eq("is_target", False).execute()
+
+        if existing.data:
+            response = supabase.table("ecommerce_channel_sales").update(data).eq(
+                "id", existing.data[0]["id"]
+            ).execute()
+        else:
+            response = supabase.table("ecommerce_channel_sales").insert(data).execute()
 
         if response.data:
             updated += 1
@@ -918,13 +925,20 @@ async def import_customer_data(
         "new_customers": new_customers,
         "repeat_customers": repeat_customers,
         "total_customers": total_customers,
+        "is_target": False,  # 実績データとして登録
     }
 
-    # Upsert
-    supabase.table("ecommerce_customer_stats").upsert(
-        data,
-        on_conflict="month"
-    ).execute()
+    # 既存の実績データをチェックして更新または挿入
+    existing = supabase.table("ecommerce_customer_stats").select("id").eq(
+        "month", month.isoformat()
+    ).eq("is_target", False).execute()
+
+    if existing.data:
+        supabase.table("ecommerce_customer_stats").update(data).eq(
+            "id", existing.data[0]["id"]
+        ).execute()
+    else:
+        supabase.table("ecommerce_customer_stats").insert(data).execute()
 
     return {"created": 0, "updated": 1}
 
@@ -957,10 +971,16 @@ async def import_website_data(
         "sessions": record.get("セッション数") or record.get("sessions"),
     }
 
-    # Upsert
-    supabase.table("ecommerce_website_stats").upsert(
-        data,
-        on_conflict="month"
+    # 既存のデータをチェックして更新または挿入
+    existing = supabase.table("ecommerce_website_stats").select("id").eq(
+        "month", month.isoformat()
     ).execute()
+
+    if existing.data:
+        supabase.table("ecommerce_website_stats").update(data).eq(
+            "id", existing.data[0]["id"]
+        ).execute()
+    else:
+        supabase.table("ecommerce_website_stats").insert(data).execute()
 
     return {"created": 0, "updated": 1}
