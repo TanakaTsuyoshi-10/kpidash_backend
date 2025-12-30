@@ -663,20 +663,23 @@ async def get_ecommerce_trend(
     month_labels = [m[:7] for m in months]  # YYYY-MM形式
 
     if metric == "channel_sales":
-        # チャネル別売上推移
+        # チャネル別売上推移（実績のみ、目標データを除外）
         current_response = supabase.table("ecommerce_channel_sales").select(
-            "month, channel, sales"
+            "month, channel, sales, is_target"
         ).in_("month", months).execute()
+        # is_targetがFalseまたはNULLのデータのみを実績として扱う
+        current_actual = [r for r in current_response.data if not r.get("is_target")]
 
         prev_response = supabase.table("ecommerce_channel_sales").select(
-            "month, channel, sales"
+            "month, channel, sales, is_target"
         ).in_("month", prev_months).execute()
+        prev_actual = [r for r in prev_response.data if not r.get("is_target")]
 
         # チャネル別にデータを整形
         data = []
         for ch in CHANNELS:
-            current_by_month = {r["month"]: r["sales"] for r in current_response.data if r["channel"] == ch}
-            prev_by_month = {r["month"]: r["sales"] for r in prev_response.data if r["channel"] == ch}
+            current_by_month = {r["month"]: r["sales"] for r in current_actual if r["channel"] == ch}
+            prev_by_month = {r["month"]: r["sales"] for r in prev_actual if r["channel"] == ch}
 
             # values配列を生成（フロントエンド互換形式）
             values = []
@@ -726,12 +729,14 @@ async def get_ecommerce_trend(
             })
 
     elif metric == "customers":
-        # 顧客数推移
+        # 顧客数推移（実績のみ、目標データを除外）
         current_response = supabase.table("ecommerce_customer_stats").select(
-            "month, new_customers, repeat_customers, total_customers"
+            "month, new_customers, repeat_customers, total_customers, is_target"
         ).in_("month", months).execute()
+        # is_targetがFalseまたはNULLのデータのみを実績として扱う
+        current_actual = [r for r in current_response.data if not r.get("is_target")]
 
-        current_by_month = {r["month"]: r for r in current_response.data}
+        current_by_month = {r["month"]: r for r in current_actual}
 
         # 表示名マッピング
         stat_labels = {
