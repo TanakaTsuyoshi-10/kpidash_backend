@@ -7,13 +7,16 @@ import calendar
 import io
 from datetime import date, datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
+from supabase import Client
+
+from app.api.deps import get_supabase_admin
 
 
 router = APIRouter(prefix="/templates", tags=["templates"])
@@ -170,13 +173,18 @@ def generate_financial_template(year: int, month: int) -> io.BytesIO:
     return output
 
 
-def generate_store_pl_template(year: int, month: int) -> io.BytesIO:
+def generate_store_pl_template(
+    year: int,
+    month: int,
+    stores: List[Dict[str, Any]]
+) -> io.BytesIO:
     """
     店舗別収支入力用Excelテンプレートを生成する
 
     Args:
         year: 対象年
         month: 対象月
+        stores: 店舗一覧（id, code, nameを含む辞書のリスト）
 
     Returns:
         Excelファイルのバイトストリーム
@@ -186,7 +194,7 @@ def generate_store_pl_template(year: int, month: int) -> io.BytesIO:
     ws.title = "店舗別収支"
 
     # 列幅設定
-    ws.column_dimensions["A"].width = 12
+    ws.column_dimensions["A"].width = 20  # 店舗名用に幅を広げる
     ws.column_dimensions["B"].width = 15
     ws.column_dimensions["C"].width = 15
     ws.column_dimensions["D"].width = 15
@@ -203,7 +211,7 @@ def generate_store_pl_template(year: int, month: int) -> io.BytesIO:
 
     # テーブルヘッダー
     headers = [
-        "店舗コード",
+        "店舗名",
         "売上高",
         "売上原価",
         "売上総利益",
@@ -222,10 +230,12 @@ def generate_store_pl_template(year: int, month: int) -> io.BytesIO:
         cell.alignment = CENTER_ALIGNMENT
         cell.border = THIN_BORDER
 
-    # サンプルデータ行（10店舗分）
-    for i in range(1, 11):
-        row = 3 + i
-        ws.cell(row=row, column=1, value=f"S{i:03d}").border = THIN_BORDER
+    # 店舗データ行を動的に生成
+    data_start_row = 4
+    for i, store in enumerate(stores):
+        row = data_start_row + i
+        # 店舗名を表示
+        ws.cell(row=row, column=1, value=store.get("name", "")).border = THIN_BORDER
         for col in range(2, 11):
             ws.cell(row=row, column=col).border = THIN_BORDER
 
@@ -235,16 +245,23 @@ def generate_store_pl_template(year: int, month: int) -> io.BytesIO:
         ws.cell(row=row, column=6, value=f"=D{row}-E{row}").border = THIN_BORDER
 
     # 合計行
-    sum_row = 14
+    store_count = len(stores)
+    sum_row = data_start_row + store_count
+    last_data_row = sum_row - 1
+
     ws.cell(row=sum_row, column=1, value="合計").font = HEADER_FONT
     ws.cell(row=sum_row, column=1).fill = HEADER_FILL
     ws.cell(row=sum_row, column=1).border = THIN_BORDER
 
     for col in range(2, 11):
         col_letter = get_column_letter(col)
-        if col in [4, 6]:  # 計算式列
+        if col in [4, 6]:  # 計算式列はスキップ
             continue
-        cell = ws.cell(row=sum_row, column=col, value=f"=SUM({col_letter}4:{col_letter}13)")
+        cell = ws.cell(
+            row=sum_row,
+            column=col,
+            value=f"=SUM({col_letter}{data_start_row}:{col_letter}{last_data_row})"
+        )
         cell.font = HEADER_FONT
         cell.fill = HEADER_FILL
         cell.border = THIN_BORDER
@@ -270,7 +287,7 @@ def generate_store_pl_template(year: int, month: int) -> io.BytesIO:
     ws2["B1"].font = HEADER_FONT
 
     explanations = [
-        ("店舗コード", "店舗分析で登録されている店舗コードを入力"),
+        ("店舗名", "店舗名は自動で設定されています（編集しないでください）"),
         ("売上高", "店舗の月間売上高"),
         ("売上原価", "店舗の月間売上原価"),
         ("売上総利益", "自動計算（売上高 - 売上原価）"),
@@ -495,9 +512,11 @@ async def download_manufacturing_template(
     ## パラメータ
     - year: 対象年（省略時は現在の年）
     - month: 対象月（省略時は現在の月）
+    - department_slug: 部門スラッグ（デフォルト: store）
 
     ## 出力
     - Excel形式（.xlsx）
+    - DBに登録されている全店舗分の行を動的に生成
     - 店舗別の売上高、売上原価、販管費、営業利益の入力項目
     - 販管費明細（人件費、地代家賃、賃借料、水道光熱費）
     - 自動計算式付き（売上総利益、営業利益）
@@ -506,6 +525,8 @@ async def download_manufacturing_template(
 async def download_store_pl_template(
     year: Optional[int] = Query(None, description="対象年"),
     month: Optional[int] = Query(None, ge=1, le=12, description="対象月"),
+    department_slug: str = Query("store", description="部門スラッグ"),
+    supabase: Client = Depends(get_supabase_admin),
 ):
     """
     店舗別収支テンプレートをダウンロード
@@ -513,6 +534,8 @@ async def download_store_pl_template(
     Args:
         year: 対象年
         month: 対象月
+        department_slug: 部門スラッグ
+        supabase: Supabaseクライアント
 
     Returns:
         Excelファイル
@@ -522,7 +545,33 @@ async def download_store_pl_template(
     month = month or now.month
 
     try:
-        output = generate_store_pl_template(year, month)
+        # 部門IDを取得
+        dept_response = supabase.table("departments").select(
+            "id"
+        ).eq("slug", department_slug).execute()
+
+        if not dept_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"部門が見つかりません: {department_slug}",
+            )
+
+        department_id = dept_response.data[0]["id"]
+
+        # 店舗一覧を取得
+        stores_response = supabase.table("segments").select(
+            "id, code, name"
+        ).eq("department_id", department_id).order("code").execute()
+
+        stores = stores_response.data or []
+
+        if not stores:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="店舗が登録されていません",
+            )
+
+        output = generate_store_pl_template(year, month, stores)
         filename = f"store_pl_template_{year}{month:02d}.xlsx"
 
         return StreamingResponse(
@@ -532,6 +581,8 @@ async def download_store_pl_template(
                 "Content-Disposition": f'attachment; filename="{filename}"'
             },
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
