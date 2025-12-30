@@ -88,13 +88,21 @@ def sum_values(values: List[Dict], key: str) -> Optional[Decimal]:
 # チャネル別実績取得
 # =============================================================================
 
+def calculate_achievement_rate(actual: Optional[Decimal], target: Optional[Decimal]) -> Optional[float]:
+    """達成率を計算する（%）"""
+    if actual is None or target is None or target == 0:
+        return None
+    result = (actual / target) * 100
+    return round(float(result), 1)
+
+
 async def get_channel_summary(
     supabase: Client,
     target_month: date,
     period_type: str = "monthly"
 ) -> Dict[str, Any]:
     """
-    チャネル別実績を取得
+    チャネル別実績を取得（目標値・達成率を含む）
 
     Args:
         supabase: Supabaseクライアント
@@ -118,23 +126,30 @@ async def get_channel_summary(
         prev_months = [get_previous_year_month(target_month).isoformat()]
         two_years_months = [date(target_month.year - 2, target_month.month, 1).isoformat()]
 
-    # 当年データ取得
+    # 当年実績データ取得（is_target=False または NULL）
     current_response = supabase.table("ecommerce_channel_sales").select(
-        "channel, sales, buyers"
+        "channel, sales, buyers, is_target"
     ).in_("month", current_months).execute()
-    current_data = current_response.data
+    # is_targetがFalseまたはNULLのデータを実績として扱う
+    current_data = [r for r in current_response.data if not r.get("is_target")]
 
-    # 前年データ取得
+    # 目標データ取得（is_target=True）
+    target_response = supabase.table("ecommerce_channel_sales").select(
+        "channel, sales, buyers"
+    ).in_("month", current_months).eq("is_target", True).execute()
+    target_data = target_response.data
+
+    # 前年データ取得（実績のみ）
     prev_response = supabase.table("ecommerce_channel_sales").select(
-        "channel, sales, buyers"
+        "channel, sales, buyers, is_target"
     ).in_("month", prev_months).execute()
-    prev_data = prev_response.data
+    prev_data = [r for r in prev_response.data if not r.get("is_target")]
 
-    # 前々年データ取得
+    # 前々年データ取得（実績のみ）
     two_years_response = supabase.table("ecommerce_channel_sales").select(
-        "channel, sales, buyers"
+        "channel, sales, buyers, is_target"
     ).in_("month", two_years_months).execute()
-    two_years_data = two_years_response.data
+    two_years_data = [r for r in two_years_response.data if not r.get("is_target")]
 
     # チャネル別に集計
     def aggregate_by_channel(data: List[Dict]) -> Dict[str, Dict]:
@@ -149,23 +164,28 @@ async def get_channel_summary(
         return result
 
     current_agg = aggregate_by_channel(current_data)
+    target_agg = aggregate_by_channel(target_data)
     prev_agg = aggregate_by_channel(prev_data)
     two_years_agg = aggregate_by_channel(two_years_data)
 
     # チャネル別データを構築
     channels = []
     total_sales = Decimal("0")
+    total_sales_target = Decimal("0")
     total_sales_prev = Decimal("0")
     total_sales_two_years = Decimal("0")
     total_buyers = 0
+    total_buyers_target = 0
     total_buyers_prev = 0
     total_buyers_two_years = 0
 
     for ch in CHANNELS:
         sales = current_agg[ch]["sales"]
+        sales_target = target_agg[ch]["sales"]
         sales_prev = prev_agg[ch]["sales"]
         sales_two_years = two_years_agg[ch]["sales"]
         buyers = current_agg[ch]["buyers"]
+        buyers_target = target_agg[ch]["buyers"]
         buyers_prev = prev_agg[ch]["buyers"]
         buyers_two_years = two_years_agg[ch]["buyers"]
 
@@ -173,14 +193,22 @@ async def get_channel_summary(
         unit_price_prev = safe_divide(float(sales_prev), buyers_prev) if sales_prev and buyers_prev else None
         unit_price_two_years = safe_divide(float(sales_two_years), buyers_two_years) if sales_two_years and buyers_two_years else None
 
+        # 達成率を計算
+        sales_achievement = calculate_achievement_rate(sales, sales_target)
+        buyers_achievement = calculate_achievement_rate(Decimal(buyers), Decimal(buyers_target)) if buyers_target else None
+
         channels.append({
             "channel": ch,
             "sales": float(sales) if sales else None,
+            "sales_target": float(sales_target) if sales_target else None,
+            "sales_achievement_rate": sales_achievement,
             "sales_previous_year": float(sales_prev) if sales_prev else None,
             "sales_two_years_ago": float(sales_two_years) if sales_two_years else None,
             "sales_yoy": calculate_yoy_rate(sales, sales_prev) if sales and sales_prev else None,
             "sales_yoy_two_years": calculate_yoy_rate(sales, sales_two_years) if sales and sales_two_years else None,
             "buyers": buyers if buyers else None,
+            "buyers_target": buyers_target if buyers_target else None,
+            "buyers_achievement_rate": buyers_achievement,
             "buyers_previous_year": buyers_prev if buyers_prev else None,
             "buyers_two_years_ago": buyers_two_years if buyers_two_years else None,
             "buyers_yoy": calculate_yoy_rate(Decimal(buyers), Decimal(buyers_prev)) if buyers and buyers_prev else None,
@@ -193,9 +221,11 @@ async def get_channel_summary(
         })
 
         total_sales += sales
+        total_sales_target += sales_target
         total_sales_prev += sales_prev
         total_sales_two_years += sales_two_years
         total_buyers += buyers
+        total_buyers_target += buyers_target
         total_buyers_prev += buyers_prev
         total_buyers_two_years += buyers_two_years
 
@@ -204,13 +234,21 @@ async def get_channel_summary(
     total_unit_price_prev = safe_divide(float(total_sales_prev), total_buyers_prev) if total_sales_prev and total_buyers_prev else None
     total_unit_price_two_years = safe_divide(float(total_sales_two_years), total_buyers_two_years) if total_sales_two_years and total_buyers_two_years else None
 
+    # 合計の達成率
+    total_sales_achievement = calculate_achievement_rate(total_sales, total_sales_target)
+    total_buyers_achievement = calculate_achievement_rate(Decimal(total_buyers), Decimal(total_buyers_target)) if total_buyers_target else None
+
     totals = {
         "sales": float(total_sales) if total_sales else None,
+        "sales_target": float(total_sales_target) if total_sales_target else None,
+        "sales_achievement_rate": total_sales_achievement,
         "sales_previous_year": float(total_sales_prev) if total_sales_prev else None,
         "sales_two_years_ago": float(total_sales_two_years) if total_sales_two_years else None,
         "sales_yoy": calculate_yoy_rate(total_sales, total_sales_prev) if total_sales and total_sales_prev else None,
         "sales_yoy_two_years": calculate_yoy_rate(total_sales, total_sales_two_years) if total_sales and total_sales_two_years else None,
         "buyers": total_buyers if total_buyers else None,
+        "buyers_target": total_buyers_target if total_buyers_target else None,
+        "buyers_achievement_rate": total_buyers_achievement,
         "buyers_previous_year": total_buyers_prev if total_buyers_prev else None,
         "buyers_two_years_ago": total_buyers_two_years if total_buyers_two_years else None,
         "buyers_yoy": calculate_yoy_rate(Decimal(total_buyers), Decimal(total_buyers_prev)) if total_buyers and total_buyers_prev else None,
@@ -365,7 +403,7 @@ async def get_customer_summary(
     period_type: str = "monthly"
 ) -> Dict[str, Any]:
     """
-    顧客別実績を取得
+    顧客別実績を取得（目標値・達成率を含む）
 
     Args:
         supabase: Supabaseクライアント
@@ -389,23 +427,30 @@ async def get_customer_summary(
         prev_months = [get_previous_year_month(target_month).isoformat()]
         two_years_months = [date(target_month.year - 2, target_month.month, 1).isoformat()]
 
-    # 当年データ取得
+    # 当年実績データ取得（is_target=False または NULL）
     current_response = supabase.table("ecommerce_customer_stats").select(
-        "new_customers, repeat_customers, total_customers"
+        "new_customers, repeat_customers, total_customers, is_target"
     ).in_("month", current_months).execute()
-    current_data = current_response.data
+    # is_targetがFalseまたはNULLのデータを実績として扱う
+    current_data = [r for r in current_response.data if not r.get("is_target")]
 
-    # 前年データ取得
+    # 目標データ取得（is_target=True）
+    target_response = supabase.table("ecommerce_customer_stats").select(
+        "new_customers, repeat_customers, total_customers"
+    ).in_("month", current_months).eq("is_target", True).execute()
+    target_data = target_response.data
+
+    # 前年データ取得（実績のみ）
     prev_response = supabase.table("ecommerce_customer_stats").select(
-        "new_customers, repeat_customers, total_customers"
+        "new_customers, repeat_customers, total_customers, is_target"
     ).in_("month", prev_months).execute()
-    prev_data = prev_response.data
+    prev_data = [r for r in prev_response.data if not r.get("is_target")]
 
-    # 前々年データ取得
+    # 前々年データ取得（実績のみ）
     two_years_response = supabase.table("ecommerce_customer_stats").select(
-        "new_customers, repeat_customers, total_customers"
+        "new_customers, repeat_customers, total_customers, is_target"
     ).in_("month", two_years_months).execute()
-    two_years_data = two_years_response.data
+    two_years_data = [r for r in two_years_response.data if not r.get("is_target")]
 
     # 集計
     def sum_stats(data: List[Dict]) -> Dict:
@@ -416,6 +461,7 @@ async def get_customer_summary(
         }
 
     current = sum_stats(current_data)
+    target = sum_stats(target_data)
     prev = sum_stats(prev_data)
     two_years = sum_stats(two_years_data)
 
@@ -425,8 +471,18 @@ async def get_customer_summary(
             return round((repeat / total) * 100, 1)
         return None
 
+    # 達成率計算（int用）
+    def calc_int_achievement(actual: int, target_val: int) -> Optional[float]:
+        if actual and target_val and target_val > 0:
+            return round((actual / target_val) * 100, 1)
+        return None
+
     data = {
         "new_customers": current["new_customers"] or None,
+        "new_customers_target": target["new_customers"] or None,
+        "new_customers_achievement_rate": calc_int_achievement(
+            current["new_customers"], target["new_customers"]
+        ),
         "new_customers_previous_year": prev["new_customers"] or None,
         "new_customers_two_years_ago": two_years["new_customers"] or None,
         "new_customers_yoy": calculate_yoy_rate(
@@ -436,6 +492,10 @@ async def get_customer_summary(
             Decimal(current["new_customers"]), Decimal(two_years["new_customers"])
         ) if current["new_customers"] and two_years["new_customers"] else None,
         "repeat_customers": current["repeat_customers"] or None,
+        "repeat_customers_target": target["repeat_customers"] or None,
+        "repeat_customers_achievement_rate": calc_int_achievement(
+            current["repeat_customers"], target["repeat_customers"]
+        ),
         "repeat_customers_previous_year": prev["repeat_customers"] or None,
         "repeat_customers_two_years_ago": two_years["repeat_customers"] or None,
         "repeat_customers_yoy": calculate_yoy_rate(
@@ -445,6 +505,10 @@ async def get_customer_summary(
             Decimal(current["repeat_customers"]), Decimal(two_years["repeat_customers"])
         ) if current["repeat_customers"] and two_years["repeat_customers"] else None,
         "total_customers": current["total_customers"] or None,
+        "total_customers_target": target["total_customers"] or None,
+        "total_customers_achievement_rate": calc_int_achievement(
+            current["total_customers"], target["total_customers"]
+        ),
         "total_customers_previous_year": prev["total_customers"] or None,
         "total_customers_two_years_ago": two_years["total_customers"] or None,
         "repeat_rate": calc_repeat_rate(current["repeat_customers"], current["total_customers"]),
