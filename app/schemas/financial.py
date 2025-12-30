@@ -260,12 +260,16 @@ class StorePL(BaseModel):
     store_name: str = Field(..., description="店舗名")
     period: date_type = Field(..., description="対象月")
 
-    # 収支項目
+    # 収支項目（実績）
     sales: Decimal = Field(default=Decimal("0"), description="売上高")
     cost_of_sales: Decimal = Field(default=Decimal("0"), description="売上原価")
     gross_profit: Decimal = Field(default=Decimal("0"), description="売上総利益")
     sga_total: Decimal = Field(default=Decimal("0"), description="販管費合計")
     operating_profit: Decimal = Field(default=Decimal("0"), description="営業利益")
+
+    # 目標値
+    sales_target: Optional[Decimal] = Field(None, description="売上高目標")
+    operating_profit_target: Optional[Decimal] = Field(None, description="営業利益目標")
 
     # 販管費明細（展開可能）
     sga_detail: Optional[StorePLSGADetail] = Field(None, description="販管費明細")
@@ -273,6 +277,10 @@ class StorePL(BaseModel):
     # 前年比較
     sales_yoy_rate: Optional[Decimal] = Field(None, description="売上高前年比")
     operating_profit_yoy_rate: Optional[Decimal] = Field(None, description="営業利益前年比")
+
+    # 達成率
+    sales_achievement_rate: Optional[Decimal] = Field(None, description="売上高達成率（%）")
+    operating_profit_achievement_rate: Optional[Decimal] = Field(None, description="営業利益達成率（%）")
 
     class Config:
         from_attributes = True
@@ -326,10 +334,18 @@ class FinancialAnalysisResponse(BaseModel):
     # 前年データ
     previous_year: Optional[FinancialSummaryWithDetails] = Field(None, description="前年データ")
 
+    # 目標データ
+    target: Optional[FinancialSummaryWithDetails] = Field(None, description="目標データ")
+
     # 前年比
     sales_yoy_rate: Optional[Decimal] = Field(None, description="売上高前年比")
     gross_profit_yoy_rate: Optional[Decimal] = Field(None, description="売上総利益前年比")
     operating_profit_yoy_rate: Optional[Decimal] = Field(None, description="営業利益前年比")
+
+    # 達成率
+    sales_achievement_rate: Optional[Decimal] = Field(None, description="売上高達成率（%）")
+    gross_profit_achievement_rate: Optional[Decimal] = Field(None, description="売上総利益達成率（%）")
+    operating_profit_achievement_rate: Optional[Decimal] = Field(None, description="営業利益達成率（%）")
 
     class Config:
         from_attributes = True

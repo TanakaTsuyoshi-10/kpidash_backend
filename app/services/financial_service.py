@@ -41,6 +41,20 @@ def _calculate_yoy_rate(
     return result.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+def _calculate_achievement_rate(
+    actual: Optional[Decimal],
+    target: Optional[Decimal],
+) -> Optional[Decimal]:
+    """達成率を計算する
+
+    達成率 = 実績 / 目標 × 100
+    """
+    if actual is None or target is None or target == 0:
+        return None
+    result = (actual / target) * 100
+    return result.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
 def _to_decimal(value: Any) -> Optional[Decimal]:
     """値をDecimalに変換する"""
     if value is None:
@@ -263,7 +277,7 @@ async def get_financial_analysis(
     period_type: str = "monthly",
 ) -> FinancialAnalysisResponse:
     """
-    財務分析データを取得する（前年比較込み）
+    財務分析データを取得する（前年比較・目標達成率込み）
 
     Args:
         supabase: Supabaseクライアント
@@ -273,7 +287,7 @@ async def get_financial_analysis(
     Returns:
         FinancialAnalysisResponse
     """
-    # 今期データを取得
+    # 今期データを取得（実績）
     current = await get_financial_summary_with_details(supabase, period, is_target=False)
 
     if current is None:
@@ -284,19 +298,31 @@ async def get_financial_analysis(
     prev_period = date(period.year - 1, period.month, 1)
     previous_year = await get_financial_summary_with_details(supabase, prev_period, is_target=False)
 
+    # 目標データを取得
+    target = await get_financial_summary_with_details(supabase, period, is_target=True)
+
     # 前年比計算
     sales_yoy = _calculate_yoy_rate(current.sales_total, previous_year.sales_total if previous_year else None)
     gross_profit_yoy = _calculate_yoy_rate(current.gross_profit, previous_year.gross_profit if previous_year else None)
     operating_profit_yoy = _calculate_yoy_rate(current.operating_profit, previous_year.operating_profit if previous_year else None)
+
+    # 達成率計算
+    sales_achievement = _calculate_achievement_rate(current.sales_total, target.sales_total if target else None)
+    gross_profit_achievement = _calculate_achievement_rate(current.gross_profit, target.gross_profit if target else None)
+    operating_profit_achievement = _calculate_achievement_rate(current.operating_profit, target.operating_profit if target else None)
 
     return FinancialAnalysisResponse(
         period=period,
         period_type=period_type,
         current=current,
         previous_year=previous_year,
+        target=target,
         sales_yoy_rate=sales_yoy,
         gross_profit_yoy_rate=gross_profit_yoy,
         operating_profit_yoy_rate=operating_profit_yoy,
+        sales_achievement_rate=sales_achievement,
+        gross_profit_achievement_rate=gross_profit_achievement,
+        operating_profit_achievement_rate=operating_profit_achievement,
     )
 
 
@@ -311,7 +337,7 @@ async def get_store_pl_list(
     is_target: bool = False,
 ) -> StorePLListResponse:
     """
-    店舗別収支一覧を取得する
+    店舗別収支一覧を取得する（目標・達成率込み）
 
     Args:
         supabase: Supabaseクライアント
@@ -344,20 +370,29 @@ async def get_store_pl_list(
         segment_map = {s["id"]: s for s in segments_response.data}
         segment_ids = list(segment_map.keys())
 
-        # 店舗別収支データを取得
+        # 店舗別収支データを取得（実績）
         pl_response = supabase.table("store_pl").select(
             "*, store_pl_sga_details(*)"
         ).eq("period", period.isoformat()).eq(
-            "is_target", is_target
+            "is_target", False
         ).in_("segment_id", segment_ids).execute()
 
         pl_map = {p["segment_id"]: p for p in (pl_response.data or [])}
+
+        # 目標データを取得
+        target_response = supabase.table("store_pl").select(
+            "segment_id, sales, operating_profit"
+        ).eq("period", period.isoformat()).eq(
+            "is_target", True
+        ).in_("segment_id", segment_ids).execute()
+
+        target_map = {p["segment_id"]: p for p in (target_response.data or [])}
 
         # 前年データを取得（前年比計算用）
         prev_period = date(period.year - 1, period.month, 1)
         prev_response = supabase.table("store_pl").select("*").eq(
             "period", prev_period.isoformat()
-        ).eq("is_target", is_target).in_("segment_id", segment_ids).execute()
+        ).eq("is_target", False).in_("segment_id", segment_ids).execute()
 
         prev_map = {p["segment_id"]: p for p in (prev_response.data or [])}
 
@@ -371,6 +406,7 @@ async def get_store_pl_list(
 
         for segment_id, segment in segment_map.items():
             pl_data = pl_map.get(segment_id)
+            target_data = target_map.get(segment_id)
             prev_data = prev_map.get(segment_id)
 
             if pl_data:
@@ -379,6 +415,10 @@ async def get_store_pl_list(
                 gross = _to_decimal(pl_data.get("gross_profit")) or (sales - cost)
                 sga = _to_decimal(pl_data.get("sga_total")) or Decimal("0")
                 op = _to_decimal(pl_data.get("operating_profit")) or (gross - sga)
+
+                # 目標値
+                sales_target = _to_decimal(target_data.get("sales")) if target_data else None
+                op_target = _to_decimal(target_data.get("operating_profit")) if target_data else None
 
                 # 販管費明細
                 sga_detail = None
@@ -406,6 +446,10 @@ async def get_store_pl_list(
                 sales_yoy = _calculate_yoy_rate(sales, prev_sales)
                 op_yoy = _calculate_yoy_rate(op, prev_op)
 
+                # 達成率
+                sales_achievement = _calculate_achievement_rate(sales, sales_target)
+                op_achievement = _calculate_achievement_rate(op, op_target)
+
                 stores.append(StorePL(
                     store_id=str(segment_id),
                     store_code=segment.get("code"),
@@ -416,9 +460,13 @@ async def get_store_pl_list(
                     gross_profit=gross,
                     sga_total=sga,
                     operating_profit=op,
+                    sales_target=sales_target,
+                    operating_profit_target=op_target,
                     sga_detail=sga_detail,
                     sales_yoy_rate=sales_yoy,
                     operating_profit_yoy_rate=op_yoy,
+                    sales_achievement_rate=sales_achievement,
+                    operating_profit_achievement_rate=op_achievement,
                 ))
 
                 total_sales += sales
@@ -428,6 +476,10 @@ async def get_store_pl_list(
                 total_op += op
             else:
                 # データがない店舗も一覧に含める
+                # 目標値のみある場合も取得
+                sales_target = _to_decimal(target_data.get("sales")) if target_data else None
+                op_target = _to_decimal(target_data.get("operating_profit")) if target_data else None
+
                 stores.append(StorePL(
                     store_id=str(segment_id),
                     store_code=segment.get("code"),
@@ -438,6 +490,8 @@ async def get_store_pl_list(
                     gross_profit=Decimal("0"),
                     sga_total=Decimal("0"),
                     operating_profit=Decimal("0"),
+                    sales_target=sales_target,
+                    operating_profit_target=op_target,
                 ))
 
         return StorePLListResponse(
