@@ -14,6 +14,8 @@ from typing import Any, Dict, List
 
 from supabase import Client
 
+from app.services.cache_service import cache
+
 
 # =============================================================================
 # 会計年度計算
@@ -122,6 +124,9 @@ async def import_financial_data(
 
         if response.data:
             result["success"] = True
+            # 成功時にキャッシュクリア
+            cache.clear_prefix("dashboard")
+            cache.clear_prefix("financial")
         else:
             result["errors"].append("データの保存に失敗しました")
 
@@ -237,6 +242,8 @@ async def import_manufacturing_data(
         if response.data:
             result["success"] = True
             result["imported_count"] = len(records_to_upsert)
+            # 成功時にキャッシュクリア
+            cache.clear_prefix("manufacturing")
         else:
             result["errors"].append("データの保存に失敗しました")
 

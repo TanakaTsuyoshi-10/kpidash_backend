@@ -23,12 +23,14 @@ from app.services.period_utils import (
     get_two_years_ago_range,
     get_current_period_defaults,
 )
+from app.services.cache_service import cached, cache
 
 
 # =============================================================================
 # メイン関数
 # =============================================================================
 
+@cached(prefix="manufacturing", ttl=300)  # 5分キャッシュ
 async def get_manufacturing_analysis(
     supabase: Client,
     period_type: str = "monthly",

@@ -9,12 +9,13 @@ from datetime import datetime
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 
 from app.core.config import settings
 from app.core.security_config import security_config
 from app.middleware.rate_limiter import RateLimitMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
-from app.api.endpoints import auth, upload, kpi, products, ecommerce, comments, regional, templates, dashboard, manufacturing, finance, complaints, targets, users
+from app.api.endpoints import auth, upload, kpi, products, ecommerce, comments, regional, templates, dashboard, manufacturing, finance, complaints, targets, users, admin
 from app.schemas.kpi import HealthResponse, APIInfo
 
 
@@ -59,6 +60,9 @@ app.add_middleware(
 
 # セキュリティヘッダー（全リクエストに適用）
 app.add_middleware(SecurityHeadersMiddleware)
+
+# Gzip圧縮（1KB以上のレスポンスを圧縮）
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # レート制限（本番環境のみ）
 if os.getenv("APP_ENV") == "production":
@@ -110,6 +114,9 @@ app.include_router(targets.router, prefix="/api/v1/targets", tags=["目標設定
 
 # 利用者管理エンドポイント
 app.include_router(users.router, prefix="/api/v1/users", tags=["利用者管理"])
+
+# 管理者用エンドポイント（キャッシュ管理など）
+app.include_router(admin.router, prefix="/api/v1/admin")
 
 
 # =============================================================================
@@ -191,6 +198,8 @@ async def startup_event():
     print(f"   セキュリティヘッダー: 有効")
     print(f"   レート制限: {'有効' if os.getenv('APP_ENV') == 'production' else '無効（開発環境）'}")
     print(f"   監査ログ: {'有効' if security_config.ENABLE_AUDIT_LOG else '無効'}")
+    print(f"   Gzip圧縮: 有効（1KB以上）")
+    print(f"   キャッシュ: 有効（インメモリ、TTL: 5分）")
 
 
 @app.on_event("shutdown")

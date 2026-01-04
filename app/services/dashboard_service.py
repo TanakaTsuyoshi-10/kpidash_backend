@@ -28,12 +28,14 @@ from app.services.period_utils import (
     get_current_period_defaults,
 )
 from app.services import complaint_service
+from app.services.cache_service import cached, cache
 
 
 # =============================================================================
 # メイン関数
 # =============================================================================
 
+@cached(prefix="dashboard", ttl=300)  # 5分キャッシュ
 async def get_dashboard_data(
     supabase: Client,
     period_type: str = "monthly",
