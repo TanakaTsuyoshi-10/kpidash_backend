@@ -4,12 +4,16 @@ FastAPIアプリケーション エントリーポイント
 KPI管理システムのバックエンドAPIを提供する。
 Supabase認証と連携し、部門別のKPIデータ管理機能を提供する。
 """
+import os
 from datetime import datetime
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.core.security_config import security_config
+from app.middleware.rate_limiter import RateLimitMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.api.endpoints import auth, upload, kpi, products, ecommerce, comments, regional, templates, dashboard, manufacturing, finance, complaints, targets, users
 from app.schemas.kpi import HealthResponse, APIInfo
 
@@ -38,13 +42,27 @@ app.add_middleware(
     allow_origins=settings.allowed_origins_list,
     # 認証情報（Cookie, Authorizationヘッダー）の送信を許可
     allow_credentials=True,
-    # 許可するHTTPメソッド
+    # 許可するHTTPメソッド（必要なメソッドのみに制限）
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    # 許可するリクエストヘッダー
-    allow_headers=["*"],
+    # 許可するリクエストヘッダー（必要なヘッダーのみに制限）
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
+    # レスポンスで公開するヘッダー
+    expose_headers=["X-Request-ID"],
     # プリフライトリクエストのキャッシュ時間（秒）
     max_age=600,
 )
+
+
+# =============================================================================
+# セキュリティミドルウェア設定
+# =============================================================================
+
+# セキュリティヘッダー（全リクエストに適用）
+app.add_middleware(SecurityHeadersMiddleware)
+
+# レート制限（本番環境のみ）
+if os.getenv("APP_ENV") == "production":
+    app.add_middleware(RateLimitMiddleware)
 
 
 # =============================================================================
@@ -170,6 +188,9 @@ async def startup_event():
     print(f"   環境: {settings.APP_ENV}")
     print(f"   デバッグ: {settings.DEBUG}")
     print(f"   許可オリジン: {settings.allowed_origins_list}")
+    print(f"   セキュリティヘッダー: 有効")
+    print(f"   レート制限: {'有効' if os.getenv('APP_ENV') == 'production' else '無効（開発環境）'}")
+    print(f"   監査ログ: {'有効' if security_config.ENABLE_AUDIT_LOG else '無効'}")
 
 
 @app.on_event("shutdown")
