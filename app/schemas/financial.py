@@ -303,6 +303,27 @@ class StorePLInput(BaseModel):
     is_target: bool = Field(default=False, description="目標フラグ")
 
 
+class StorePLParseError(BaseModel):
+    """店舗別収支パースエラー"""
+    row: Optional[int] = Field(None, description="エラー行番号")
+    column: Optional[str] = Field(None, description="エラー列名")
+    message: str = Field(..., description="エラーメッセージ")
+    value: Optional[str] = Field(None, description="エラー値")
+
+
+class StorePLUploadResult(BaseModel):
+    """店舗別収支アップロード結果"""
+    success: bool = Field(..., description="成功かどうか")
+    message: str = Field(default="", description="結果メッセージ")
+    month: Optional[str] = Field(None, description="対象月")
+    data_type: Optional[str] = Field(None, description="データ区分（実績/予算）")
+    imported_count: int = Field(default=0, description="インポート件数")
+    updated_count: int = Field(default=0, description="更新件数")
+    inserted_count: int = Field(default=0, description="挿入件数")
+    errors: List[StorePLParseError] = Field(default_factory=list, description="エラー一覧")
+    warnings: List[str] = Field(default_factory=list, description="警告一覧")
+
+
 class StorePLListResponse(BaseModel):
     """店舗別収支一覧レスポンス"""
     period: date_type = Field(..., description="対象月")

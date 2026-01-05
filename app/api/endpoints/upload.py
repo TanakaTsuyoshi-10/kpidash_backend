@@ -3,11 +3,12 @@ CSVアップロードエンドポイントモジュール
 
 CSVファイルのアップロードと処理を行うエンドポイントを提供する。
 店舗別CSV、商品別CSVの2種類をサポート。
-財務データExcel、製造データExcelのアップロードもサポート。
+財務データExcel、製造データExcel、店舗別収支Excel/CSVのアップロードもサポート。
 
 エンドポイント:
 - POST /upload/store-kpi: 店舗別売上CSVのアップロード
 - POST /upload/product-kpi: 商品別売上CSVのアップロード
+- POST /upload/store-pl: 店舗別収支Excel/CSVのアップロード
 - GET /upload/template/{csv_type}: CSVテンプレートのダウンロード
 - POST /upload/financial: 財務データExcelのアップロード
 - POST /upload/manufacturing: 製造データExcelのアップロード
@@ -30,6 +31,8 @@ from app.schemas.financial import (
     FinancialParseError,
     ManufacturingUploadResult,
     ManufacturingSummary,
+    StorePLUploadResult,
+    StorePLParseError,
 )
 from app.services.parser import (
     parse_store_csv,
@@ -51,6 +54,10 @@ from app.services.excel_parser import (
 from app.services.financial_import_service import (
     import_financial_data,
     import_manufacturing_data,
+)
+from app.services.store_pl_service import (
+    parse_store_pl_file,
+    import_store_pl_data,
 )
 
 
@@ -817,6 +824,152 @@ async def upload_manufacturing_excel(
         month=parsed.get("month"),
         imported_count=import_result.get("imported_count", 0),
         summary=summary,
+        errors=[],
+        warnings=parsed.get("warnings", []) + import_result.get("warnings", []),
+    )
+
+
+# =============================================================================
+# 店舗別収支Excel/CSVアップロード
+# =============================================================================
+
+@router.post(
+    "/store-pl",
+    response_model=StorePLUploadResult,
+    summary="店舗別収支データをアップロード",
+    description="""
+    店舗別収支データのExcel/CSVファイルをアップロードして処理する。
+
+    ## ファイルフォーマット
+    以下のカラムを含むExcel(.xlsx, .xls)またはCSVファイル:
+    - 店舗コード（必須）: 店舗マスタの店舗コード
+    - 店舗名: 店舗名称
+    - 売上高（必須）: 売上金額
+    - 売上原価: 売上原価
+    - 販管費: 販売管理費
+    - 営業利益: 営業利益（未設定の場合は自動計算）
+    - 期間: 対象年月（YYYY-MM形式または「2025年11月」形式）
+    - 人件費: 販管費内訳（オプション）
+    - 地代家賃: 販管費内訳（オプション）
+    - 賃借料: 販管費内訳（オプション）
+    - 水道光熱費: 販管費内訳（オプション）
+
+    ## 処理内容
+    1. ファイル形式自動判定（Excel/CSV）
+    2. エンコーディング自動判定（CSVの場合）
+    3. カラム名の正規化
+    4. 店舗マスタとの照合
+    5. store_plテーブルへのUpsert
+    6. store_pl_sga_detailsテーブルへの保存（販管費明細がある場合）
+
+    ## 対応エンコーディング（CSV）
+    UTF-8, Shift-JIS, CP932（Windows日本語）, EUC-JP
+    """,
+    responses={
+        200: {
+            "description": "インポート成功",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": True,
+                        "message": "店舗別収支データをインポートしました",
+                        "month": "2025-11-01",
+                        "data_type": "実績",
+                        "imported_count": 10,
+                        "updated_count": 5,
+                        "inserted_count": 5,
+                        "errors": [],
+                        "warnings": ["店舗コード '99' はマスタに存在しません"]
+                    }
+                }
+            }
+        },
+        400: {
+            "description": "ファイル形式エラー"
+        },
+        422: {
+            "description": "バリデーションエラー"
+        }
+    }
+)
+async def upload_store_pl(
+    file: UploadFile = File(..., description="アップロードする店舗別収支Excel/CSV"),
+    current_user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase_admin),
+) -> StorePLUploadResult:
+    """
+    店舗別収支データをアップロードして処理する
+
+    Args:
+        file: アップロードされたExcel/CSVファイル
+        current_user: 認証されたユーザー
+        supabase: Supabase管理者クライアント
+
+    Returns:
+        StorePLUploadResult: インポート結果
+    """
+    # ファイル読み込み
+    try:
+        content = await file.read()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"ファイルの読み込みに失敗しました: {str(e)}"
+        )
+
+    # パース
+    parsed = parse_store_pl_file(content, file.filename or "")
+
+    if not parsed["success"]:
+        # パースエラー
+        if parsed["errors"]:
+            errors = [
+                StorePLParseError(**e) if isinstance(e, dict) else StorePLParseError(message=str(e))
+                for e in parsed["errors"]
+            ]
+            return StorePLUploadResult(
+                success=False,
+                message="データにエラーがあります",
+                errors=errors,
+                warnings=parsed.get("warnings", []),
+            )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ファイルのパースに失敗しました"
+        )
+
+    # DBインポート
+    try:
+        import_result = await import_store_pl_data(supabase, parsed)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"データのインポートに失敗しました: {str(e)}"
+        )
+
+    if not import_result["success"]:
+        errors = [
+            StorePLParseError(**e) if isinstance(e, dict) else StorePLParseError(message=str(e))
+            for e in import_result.get("errors", [])
+        ]
+        return StorePLUploadResult(
+            success=False,
+            message="データの保存に失敗しました",
+            month=parsed.get("month"),
+            errors=errors,
+            warnings=parsed.get("warnings", []) + import_result.get("warnings", []),
+        )
+
+    # 成功
+    data_type = "予算" if parsed.get("is_target") else "実績"
+    return StorePLUploadResult(
+        success=True,
+        message=f"店舗別収支データ（{data_type}）をインポートしました",
+        month=parsed.get("month"),
+        data_type=data_type,
+        imported_count=import_result.get("imported_count", 0),
+        updated_count=import_result.get("updated_count", 0),
+        inserted_count=import_result.get("inserted_count", 0),
         errors=[],
         warnings=parsed.get("warnings", []) + import_result.get("warnings", []),
     )
