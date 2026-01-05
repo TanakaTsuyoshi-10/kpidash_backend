@@ -362,7 +362,7 @@ async def get_store_pl_list(
         # 店舗一覧を取得
         segments_response = supabase.table("segments").select(
             "id, code, name"
-        ).eq("department_id", dept_id).order("display_order").execute()
+        ).eq("department_id", dept_id).order("code").execute()
 
         if not segments_response.data:
             return StorePLListResponse(period=period, stores=[])
