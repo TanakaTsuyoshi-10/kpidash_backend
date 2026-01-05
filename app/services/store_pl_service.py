@@ -33,17 +33,18 @@ from app.services.cache_service import cache
 
 # 日本語カラム名 → 内部カラム名のマッピング
 COLUMN_MAPPING = {
-    # 店舗識別
+    # 店舗識別（店舗名でも店舗コードとして扱う）
     "店舗コード": "store_code",
     "店舗CD": "store_code",
     "店舗番号": "store_code",
-    "店舗名": "store_name",
-    "店舗名称": "store_name",
+    "店舗名": "store_code",  # 店舗名でも識別可能
+    "店舗名称": "store_code",  # 店舗名称でも識別可能
 
     # 期間
     "期間": "period",
     "年月": "period",
     "対象月": "period",
+    "対象年月": "period",
 
     # 収支項目
     "売上高": "sales",
@@ -68,6 +69,9 @@ COLUMN_MAPPING = {
     "データ区分": "data_type",
     "区分": "data_type",
 }
+
+# ヘッダー行を検出するためのキーワード
+HEADER_KEYWORDS = {"店舗名", "店舗コード", "店舗CD", "売上高", "売上", "営業利益"}
 
 
 # =============================================================================
@@ -107,20 +111,20 @@ def parse_store_pl_file(
         # ファイル形式を判定
         file_type = detect_file_type(filename)
 
-        # データフレームとして読み込み
+        # まずヘッダーなしで読み込み、ヘッダー行を検出する
         if file_type in ("xlsx", "xls"):
-            df, warnings = read_excel_file(file_content, file_type, header=0)
+            df_raw, warnings = read_excel_file(file_content, file_type, header=None)
             result["warnings"].extend(warnings)
         elif file_type == "csv":
-            df, warnings = read_csv_file(file_content, header=0)
+            df_raw, warnings = read_csv_file(file_content, header=None)
             result["warnings"].extend(warnings)
         else:
             # バイナリ判定で再試行
             if file_content[:4] == b'PK\x03\x04':
-                df, warnings = read_excel_file(file_content, "xlsx", header=0)
+                df_raw, warnings = read_excel_file(file_content, "xlsx", header=None)
                 result["warnings"].extend(warnings)
             elif file_content[:4] == b'\xd0\xcf\x11\xe0':
-                df, warnings = read_excel_file(file_content, "xls", header=0)
+                df_raw, warnings = read_excel_file(file_content, "xls", header=None)
                 result["warnings"].extend(warnings)
             else:
                 result["errors"].append({
@@ -130,6 +134,24 @@ def parse_store_pl_file(
                     "value": None,
                 })
                 return result
+
+        # ヘッダー行を検出
+        header_row = _detect_header_row(df_raw)
+
+        # ヘッダー行より前から期間を抽出
+        period_from_meta = _extract_period_from_metadata(df_raw, header_row)
+        if period_from_meta:
+            result["period"] = period_from_meta.isoformat()
+
+        # ヘッダー行を使ってデータフレームを再構築
+        if header_row > 0:
+            df = df_raw.iloc[header_row:].reset_index(drop=True)
+            df.columns = df.iloc[0]
+            df = df.iloc[1:].reset_index(drop=True)
+        else:
+            df = df_raw.copy()
+            df.columns = df.iloc[0]
+            df = df.iloc[1:].reset_index(drop=True)
 
         # カラム名を正規化
         df = _normalize_columns(df)
@@ -146,12 +168,13 @@ def parse_store_pl_file(
             })
             return result
 
-        # 期間を特定
-        period = _extract_period(df)
-        if period:
-            result["period"] = period.isoformat()
-        else:
-            result["warnings"].append("期間情報が見つかりません。各行の期間カラムから取得します。")
+        # 期間を特定（メタデータから取得できていない場合のみ）
+        if not result["period"]:
+            period = _extract_period(df)
+            if period:
+                result["period"] = period.isoformat()
+            else:
+                result["warnings"].append("期間情報が見つかりません。各行の期間カラムから取得します。")
 
         # データ区分を特定
         if "data_type" in df.columns:
@@ -198,6 +221,44 @@ def parse_store_pl_file(
         })
 
     return result
+
+
+def _detect_header_row(df: pd.DataFrame) -> int:
+    """ヘッダー行を検出する"""
+    for idx, row in df.iterrows():
+        row_values = [str(v).strip() for v in row.values if pd.notna(v)]
+        # ヘッダーキーワードが含まれているか確認
+        matches = sum(1 for val in row_values if val in HEADER_KEYWORDS)
+        if matches >= 2:  # 2つ以上のキーワードが一致したらヘッダー行と判定
+            return idx
+    return 0  # 見つからなければ最初の行をヘッダーとする
+
+
+def _extract_period_from_metadata(df: pd.DataFrame, header_row: int) -> Optional[date]:
+    """ヘッダー行より前のメタデータから期間を抽出する"""
+    for idx in range(header_row):
+        row = df.iloc[idx]
+        for i, val in enumerate(row.values):
+            if pd.isna(val):
+                continue
+            val_str = str(val).strip()
+
+            # "対象年月" などのラベルを見つけた場合、隣のセルを確認
+            if val_str in ["対象年月", "対象月", "年月", "期間"]:
+                # 次のセル（同じ行の右側）を確認
+                if i + 1 < len(row.values):
+                    next_val = row.values[i + 1]
+                    if pd.notna(next_val):
+                        period = _parse_period_value(next_val)
+                        if period:
+                            return period
+
+            # 値自体が日付かもしれない
+            period = _parse_period_value(val)
+            if period:
+                return period
+
+    return None
 
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -478,15 +539,23 @@ async def import_store_pl_data(
 
 
 async def _get_segment_map(supabase: Client) -> Dict[str, str]:
-    """店舗コードからsegment_idへのマッピングを取得する"""
-    response = supabase.table("segments").select("id, code").execute()
+    """店舗コード/店舗名からsegment_idへのマッピングを取得する"""
+    response = supabase.table("segments").select("id, code, name").execute()
 
     segment_map = {}
     if response.data:
         for seg in response.data:
+            seg_id = seg["id"]
+
+            # コードでマッピング
             code = seg.get("code")
             if code:
-                segment_map[str(code)] = seg["id"]
+                segment_map[str(code)] = seg_id
+
+            # 名前でもマッピング（コードがない場合の fallback）
+            name = seg.get("name")
+            if name:
+                segment_map[str(name).strip()] = seg_id
 
     return segment_map
 
