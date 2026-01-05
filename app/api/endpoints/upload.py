@@ -151,8 +151,8 @@ async def upload_store_kpi(
             detail=f"ファイルの読み込みに失敗しました: {str(e)}"
         )
 
-    # CSVパース
-    parsed = parse_store_csv(content)
+    # CSVパース（Excelファイルにも対応）
+    parsed = parse_store_csv(content, file.filename or "")
 
     if not parsed["success"]:
         # パースエラー
@@ -289,8 +289,8 @@ async def upload_product_kpi(
             detail=f"ファイルの読み込みに失敗しました: {str(e)}"
         )
 
-    # CSVパース
-    parsed = parse_product_csv(content)
+    # CSVパース（Excelファイルにも対応）
+    parsed = parse_product_csv(content, file.filename or "")
 
     if not parsed["success"]:
         if parsed["errors"]:
@@ -448,7 +448,7 @@ async def test_parse_store_csv(
     店舗CSVのパース処理をテストする（認証なし）
     """
     content = await file.read()
-    parsed = parse_store_csv(content)
+    parsed = parse_store_csv(content, file.filename or "")
     return {
         "success": parsed["success"],
         "period": str(parsed["period"]) if parsed["period"] else None,
@@ -472,7 +472,7 @@ async def test_parse_product_csv(
     商品CSVのパース処理をテストする（認証なし）
     """
     content = await file.read()
-    parsed = parse_product_csv(content)
+    parsed = parse_product_csv(content, file.filename or "")
 
     # 店舗別統計を集計
     stores = {}

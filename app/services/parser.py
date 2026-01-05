@@ -3,13 +3,16 @@ CSV解析サービスモジュール
 
 CSVファイルの読み込みと解析を行うサービスを提供する。
 店舗別CSV、商品別CSVの2種類をサポート。
+Excel形式（.xlsx, .xls）からの読み込みにも対応。
 
 機能:
 - エンコーディング自動判定（UTF-8, Shift-JIS, CP932対応）
+- Excel/CSV形式の自動判定
 - 期間行のパース
 - 店舗別/商品別CSVのパース
 - バリデーションとエラーレポート生成
 """
+import io
 import re
 from datetime import date
 from io import BytesIO, StringIO
@@ -17,6 +20,13 @@ from typing import Dict, Any, List, Optional, Tuple
 
 import chardet
 import pandas as pd
+
+from app.services.file_reader import (
+    detect_file_type,
+    detect_encoding as detect_encoding_new,
+    read_excel_file,
+    read_csv_raw,
+)
 
 
 # =============================================================================
@@ -109,7 +119,7 @@ def parse_period(period_str: str) -> Optional[date]:
 # 店舗別CSVパース
 # =============================================================================
 
-def parse_store_csv(file_content: bytes) -> Dict[str, Any]:
+def parse_store_csv(file_content: bytes, filename: str = "") -> Dict[str, Any]:
     """
     店舗別CSVをパースする（POS出力形式対応）
 
@@ -119,8 +129,11 @@ def parse_store_csv(file_content: bytes) -> Dict[str, Any]:
     - 3行目: ヘッダー（店舗CD,店舗名称,今年度(小計),今年度(客数),...）
     - 4行目以降: データ
 
+    Excel形式（.xlsx, .xls）にも対応。
+
     Args:
         file_content: CSVファイルの内容（バイト列）
+        filename: ファイル名（形式判定用）
 
     Returns:
         Dict[str, Any]: パース結果
@@ -138,7 +151,18 @@ def parse_store_csv(file_content: bytes) -> Dict[str, Any]:
         "warnings": [],
     }
 
-    # エンコーディング検出
+    # ファイル形式を判定
+    file_type = detect_file_type(filename)
+
+    # Excel形式の場合
+    if file_type in ("xlsx", "xls"):
+        return _parse_store_excel(file_content, file_type, result)
+
+    # バイナリファイルかどうかを確認（拡張子がない場合の対策）
+    if _is_binary_excel(file_content):
+        return _parse_store_excel(file_content, "xlsx", result)
+
+    # CSV形式の場合
     encoding = detect_encoding(file_content)
 
     try:
@@ -280,7 +304,7 @@ def parse_store_csv(file_content: bytes) -> Dict[str, Any]:
 # 商品別CSVパース（POS形式対応）
 # =============================================================================
 
-def parse_product_csv(file_content: bytes) -> Dict[str, Any]:
+def parse_product_csv(file_content: bytes, filename: str = "") -> Dict[str, Any]:
     """
     商品別CSVをパースする（POS出力形式対応）
 
@@ -290,8 +314,11 @@ def parse_product_csv(file_content: bytes) -> Dict[str, Any]:
     - 3行目: ヘッダー（店舗CD,店舗名,商品CD,商品名,商品大分類CD,商品大分類名,...）
     - 4行目以降: データ（店舗別×商品別）
 
+    Excel形式（.xlsx, .xls）にも対応。
+
     Args:
         file_content: CSVファイルの内容（バイト列）
+        filename: ファイル名（形式判定用）
 
     Returns:
         Dict[str, Any]: パース結果
@@ -309,7 +336,18 @@ def parse_product_csv(file_content: bytes) -> Dict[str, Any]:
         "warnings": [],
     }
 
-    # エンコーディング検出
+    # ファイル形式を判定
+    file_type = detect_file_type(filename)
+
+    # Excel形式の場合
+    if file_type in ("xlsx", "xls"):
+        return _parse_product_excel(file_content, file_type, result)
+
+    # バイナリファイルかどうかを確認（拡張子がない場合の対策）
+    if _is_binary_excel(file_content):
+        return _parse_product_excel(file_content, "xlsx", result)
+
+    # CSV形式の場合
     encoding = detect_encoding(file_content)
 
     try:
@@ -590,3 +628,357 @@ def extract_product_names(df: pd.DataFrame, column_name: str = "商品名") -> L
 
     names = df[column_name].dropna().unique().tolist()
     return [str(name).strip() for name in names if str(name).strip()]
+
+
+# =============================================================================
+# Excel形式対応ヘルパー関数
+# =============================================================================
+
+def _is_binary_excel(file_content: bytes) -> bool:
+    """
+    バイト列がExcelファイル（バイナリ）かどうかを判定する
+
+    ZIPマジックバイト（.xlsx）またはOLEマジックバイト（.xls）をチェック。
+
+    Args:
+        file_content: ファイル内容（バイト列）
+
+    Returns:
+        bool: Excelファイルの場合True
+    """
+    if len(file_content) < 4:
+        return False
+
+    # .xlsx (ZIP format) magic bytes: 50 4B 03 04
+    if file_content[:4] == b'PK\x03\x04':
+        return True
+
+    # .xls (OLE compound) magic bytes: D0 CF 11 E0
+    if file_content[:4] == b'\xd0\xcf\x11\xe0':
+        return True
+
+    return False
+
+
+def _parse_store_excel(
+    file_content: bytes,
+    file_type: str,
+    result: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    店舗別データをExcelファイルからパースする
+
+    Args:
+        file_content: ファイル内容（バイト列）
+        file_type: ファイル形式（xlsx/xls）
+        result: 結果格納用辞書
+
+    Returns:
+        Dict[str, Any]: パース結果
+    """
+    try:
+        # Excelファイルを読み込み
+        df, warnings = read_excel_file(
+            file_content,
+            file_type=file_type,
+            header=2,  # 3行目がヘッダー（0始まりで2）
+            skiprows=None,
+        )
+        result["warnings"].extend(warnings)
+
+        # 期間情報を取得（1行目）
+        df_header, _ = read_excel_file(
+            file_content,
+            file_type=file_type,
+            header=None,
+            skiprows=None,
+        )
+        if len(df_header) > 0:
+            period_cell = df_header.iloc[0, 1] if df_header.shape[1] > 1 else df_header.iloc[0, 0]
+            period = parse_period(str(period_cell) if period_cell else "")
+            if period:
+                result["period"] = period
+            else:
+                result["warnings"].append("期間情報を取得できませんでした")
+
+        # 必須カラムの確認
+        sales_columns = ["今年度(小計)", "今年度(税込小計)", "今年度（税込小計）", "今年度（小計）", "税込小計", "小計"]
+        customer_columns = ["今年度(客数)", "今年度（客数）", "客数"]
+
+        sales_col = None
+        for col in sales_columns:
+            if col in df.columns:
+                sales_col = col
+                break
+
+        customer_col = None
+        for col in customer_columns:
+            if col in df.columns:
+                customer_col = col
+                break
+
+        if "店舗CD" not in df.columns or "店舗名称" not in df.columns:
+            # カラム名のバリエーションをチェック
+            if "店舗CD" not in df.columns and "店舗コード" in df.columns:
+                df = df.rename(columns={"店舗コード": "店舗CD"})
+            if "店舗名称" not in df.columns and "店舗名" in df.columns:
+                df = df.rename(columns={"店舗名": "店舗名称"})
+
+        missing = []
+        if "店舗CD" not in df.columns:
+            missing.append("店舗CD")
+        if "店舗名称" not in df.columns:
+            missing.append("店舗名称")
+        if not sales_col:
+            missing.append("売上カラム")
+        if not customer_col:
+            missing.append("客数カラム")
+
+        if missing:
+            result["errors"].append(f"必須カラムがありません: {', '.join(missing)}")
+            return result
+
+        # データ行のパース
+        for idx, row in df.iterrows():
+            row_num = idx + 4  # ヘッダー行を考慮
+
+            try:
+                store_code = str(row["店舗CD"]).strip()
+                store_name = str(row["店舗名称"]).strip()
+
+                # 空行スキップ
+                if not store_code or store_code.lower() == "nan":
+                    continue
+
+                # 売上のパース
+                sales_val = row[sales_col]
+                try:
+                    if pd.isna(sales_val):
+                        sales = 0
+                    else:
+                        sales = int(float(str(sales_val).replace(",", "")))
+                except ValueError:
+                    result["errors"].append(f"{row_num}行目: 売上が数値ではありません: {sales_val}")
+                    continue
+
+                # 客数のパース
+                customers_val = row[customer_col]
+                try:
+                    if pd.isna(customers_val):
+                        customers = 0
+                    else:
+                        customers = int(float(str(customers_val).replace(",", "")))
+                except ValueError:
+                    result["errors"].append(f"{row_num}行目: 客数が数値ではありません: {customers_val}")
+                    continue
+
+                result["data"].append({
+                    "store_code": store_code,
+                    "store_name": store_name,
+                    "sales": sales,
+                    "customers": customers,
+                })
+
+            except Exception as e:
+                result["errors"].append(f"{row_num}行目: パースエラー: {str(e)}")
+
+        if not result["data"]:
+            result["errors"].append("有効なデータ行がありません")
+            return result
+
+        result["success"] = len(result["errors"]) == 0
+
+    except ValueError as e:
+        result["errors"].append(str(e))
+    except Exception as e:
+        result["errors"].append(f"Excelファイルの解析に失敗しました: {str(e)}")
+
+    return result
+
+
+def _parse_product_excel(
+    file_content: bytes,
+    file_type: str,
+    result: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    商品別データをExcelファイルからパースする
+
+    Args:
+        file_content: ファイル内容（バイト列）
+        file_type: ファイル形式（xlsx/xls）
+        result: 結果格納用辞書
+
+    Returns:
+        Dict[str, Any]: パース結果
+    """
+    try:
+        # Excelファイルを読み込み
+        df, warnings = read_excel_file(
+            file_content,
+            file_type=file_type,
+            header=2,  # 3行目がヘッダー（0始まりで2）
+            skiprows=None,
+        )
+        result["warnings"].extend(warnings)
+
+        # 期間情報を取得（1行目）
+        df_header, _ = read_excel_file(
+            file_content,
+            file_type=file_type,
+            header=None,
+            skiprows=None,
+        )
+        if len(df_header) > 0:
+            period_cell = df_header.iloc[0, 1] if df_header.shape[1] > 1 else df_header.iloc[0, 0]
+            period = parse_period(str(period_cell) if period_cell else "")
+            if period:
+                result["period"] = period
+            else:
+                result["warnings"].append("期間情報を取得できませんでした")
+
+        # カラムマッピング
+        required_mapping = {
+            "店舗CD": ["店舗CD", "店舗コード"],
+            "店舗名": ["店舗名", "店舗名称"],
+            "商品CD": ["商品CD", "商品コード"],
+            "商品名": ["商品名", "商品名称"],
+            "大分類名": ["商品大分類名", "大分類名", "大分類"],
+            "件数": ["件数", "数量", "販売数量"],
+            "税込小計": ["税込小計", "税込売上", "売上"],
+        }
+
+        column_map = {}
+        missing = []
+
+        for key, candidates in required_mapping.items():
+            found = False
+            for col in candidates:
+                if col in df.columns:
+                    column_map[key] = col
+                    found = True
+                    break
+            if not found:
+                missing.append(key)
+
+        if missing:
+            result["errors"].append(f"必須カラムがありません: {', '.join(missing)}")
+            return result
+
+        # オプションカラム
+        optional_mapping = {
+            "大分類CD": ["商品大分類CD", "大分類CD", "大分類コード"],
+            "中分類CD": ["商品中分類CD", "中分類CD", "中分類コード"],
+            "中分類名": ["商品中分類名", "中分類名", "中分類"],
+            "税抜小計": ["税抜小計", "税抜売上"],
+            "消費税": ["消費税", "消費税額"],
+        }
+
+        optional_map = {}
+        for key, candidates in optional_mapping.items():
+            for col in candidates:
+                if col in df.columns:
+                    optional_map[key] = col
+                    break
+
+        # データ行のパース
+        for idx, row in df.iterrows():
+            row_num = idx + 4
+
+            try:
+                store_code = str(row[column_map["店舗CD"]]).strip()
+                store_name = str(row[column_map["店舗名"]]).strip()
+                product_code = str(row[column_map["商品CD"]]).strip()
+                product_name = str(row[column_map["商品名"]]).strip()
+                category = str(row[column_map["大分類名"]]).strip()
+
+                # 空行スキップ
+                if not product_name or product_name.lower() == "nan":
+                    continue
+
+                # 件数のパース
+                quantity_val = row[column_map["件数"]]
+                try:
+                    if pd.isna(quantity_val):
+                        quantity = 0
+                    else:
+                        quantity = int(float(str(quantity_val).replace(",", "")))
+                except ValueError:
+                    result["errors"].append(f"{row_num}行目: 件数が数値ではありません: {quantity_val}")
+                    continue
+
+                # 売上のパース
+                sales_val = row[column_map["税込小計"]]
+                try:
+                    if pd.isna(sales_val):
+                        sales = 0
+                    else:
+                        sales = int(float(str(sales_val).replace(",", "")))
+                except ValueError:
+                    result["errors"].append(f"{row_num}行目: 税込小計が数値ではありません: {sales_val}")
+                    continue
+
+                # オプション項目
+                category_code = None
+                if "大分類CD" in optional_map:
+                    val = row[optional_map["大分類CD"]]
+                    category_code = str(val).strip() if not pd.isna(val) else None
+
+                subcategory_code = None
+                if "中分類CD" in optional_map:
+                    val = row[optional_map["中分類CD"]]
+                    subcategory_code = str(val).strip() if not pd.isna(val) else None
+
+                subcategory_name = None
+                if "中分類名" in optional_map:
+                    val = row[optional_map["中分類名"]]
+                    subcategory_name = str(val).strip() if not pd.isna(val) else None
+
+                sales_without_tax = None
+                if "税抜小計" in optional_map:
+                    val = row[optional_map["税抜小計"]]
+                    try:
+                        if not pd.isna(val):
+                            sales_without_tax = int(float(str(val).replace(",", "")))
+                    except ValueError:
+                        pass
+
+                tax_amount = None
+                if "消費税" in optional_map:
+                    val = row[optional_map["消費税"]]
+                    try:
+                        if not pd.isna(val):
+                            tax_amount = int(float(str(val).replace(",", "")))
+                    except ValueError:
+                        pass
+
+                result["data"].append({
+                    "store_code": store_code,
+                    "store_name": store_name,
+                    "product_code": product_code,
+                    "product_name": product_name,
+                    "category": category,
+                    "category_code": category_code,
+                    "subcategory_code": subcategory_code,
+                    "subcategory_name": subcategory_name,
+                    "quantity": quantity,
+                    "sales": sales,
+                    "sales_without_tax": sales_without_tax,
+                    "tax_amount": tax_amount,
+                })
+
+            except Exception as e:
+                result["errors"].append(f"{row_num}行目: パースエラー: {str(e)}")
+
+        if not result["data"]:
+            result["errors"].append("有効なデータ行がありません")
+            return result
+
+        result["success"] = len(result["errors"]) == 0
+
+    except ValueError as e:
+        result["errors"].append(str(e))
+    except Exception as e:
+        result["errors"].append(f"Excelファイルの解析に失敗しました: {str(e)}")
+
+    return result
