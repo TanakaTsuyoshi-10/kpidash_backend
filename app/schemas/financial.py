@@ -275,6 +275,8 @@ class StorePL(BaseModel):
     sga_detail: Optional[StorePLSGADetail] = Field(None, description="販管費明細")
 
     # 前年比較
+    sales_prev_year: Optional[Decimal] = Field(None, description="売上高（前年同月）")
+    operating_profit_prev_year: Optional[Decimal] = Field(None, description="営業利益（前年同月）")
     sales_yoy_rate: Optional[Decimal] = Field(None, description="売上高前年比")
     operating_profit_yoy_rate: Optional[Decimal] = Field(None, description="営業利益前年比")
 

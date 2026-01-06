@@ -463,6 +463,8 @@ async def get_store_pl_list(
                     sales_target=sales_target,
                     operating_profit_target=op_target,
                     sga_detail=sga_detail,
+                    sales_prev_year=prev_sales,
+                    operating_profit_prev_year=prev_op,
                     sales_yoy_rate=sales_yoy,
                     operating_profit_yoy_rate=op_yoy,
                     sales_achievement_rate=sales_achievement,
@@ -610,6 +612,8 @@ async def get_store_pl_by_segment_id(
             sga_total=sga,
             operating_profit=op,
             sga_detail=sga_detail,
+            sales_prev_year=prev_sales,
+            operating_profit_prev_year=prev_op,
             sales_yoy_rate=sales_yoy,
             operating_profit_yoy_rate=op_yoy,
         )
