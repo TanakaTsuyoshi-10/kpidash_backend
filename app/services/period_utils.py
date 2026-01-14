@@ -136,12 +136,33 @@ def get_period_range(
         return _get_monthly_range(year, month)
 
 
-def _get_monthly_range(year: int, month: int) -> Tuple[date, date, str]:
-    """月次の期間を取得する"""
-    start_date = date(year, month, 1)
-    _, last_day = calendar.monthrange(year, month)
-    end_date = date(year, month, last_day)
-    label = f"{year}年{month}月"
+def _get_monthly_range(fiscal_year: int, month: int) -> Tuple[date, date, str]:
+    """月次の期間を取得する
+
+    Args:
+        fiscal_year: 年度（9月始まり）
+        month: 月（1-12）
+
+    Note:
+        年度と月からカレンダー年を計算:
+        - 9-12月: fiscal_year - 1 年（年度の前半）
+        - 1-8月: fiscal_year年（年度の後半）
+
+        例: 2026年度10月 → 2025年10月（カレンダー）
+            2026年度3月 → 2026年3月（カレンダー）
+    """
+    # 年度からカレンダー年に変換
+    if month >= FISCAL_YEAR_START_MONTH:
+        # 9-12月は年度の前年
+        calendar_year = fiscal_year - 1
+    else:
+        # 1-8月は年度と同じ
+        calendar_year = fiscal_year
+
+    start_date = date(calendar_year, month, 1)
+    _, last_day = calendar.monthrange(calendar_year, month)
+    end_date = date(calendar_year, month, last_day)
+    label = f"{calendar_year}年{month}月"
     return start_date, end_date, label
 
 
