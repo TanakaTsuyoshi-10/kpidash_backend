@@ -127,6 +127,17 @@ async def import_financial_data(
             # 成功時にキャッシュクリア
             cache.clear_prefix("dashboard")
             cache.clear_prefix("financial")
+
+            # 原価明細の保存
+            cost_details = parsed_data.get("cost_details")
+            if cost_details:
+                await _import_cost_details(supabase, month, is_target, cost_details)
+
+            # 販管費明細の保存
+            sga_details = parsed_data.get("sga_details")
+            if sga_details:
+                await _import_sga_details(supabase, month, is_target, sga_details)
+
         else:
             result["errors"].append("データの保存に失敗しました")
 
@@ -134,6 +145,88 @@ async def import_financial_data(
         result["errors"].append(f"DB操作エラー: {str(e)}")
 
     return result
+
+
+async def _import_cost_details(
+    supabase: Client,
+    month: str,
+    is_target: bool,
+    cost_details: Dict[str, Any]
+) -> None:
+    """
+    原価明細をDBに保存する
+
+    Args:
+        supabase: Supabaseクライアント
+        month: 対象月
+        is_target: 目標値かどうか
+        cost_details: 原価明細データ
+    """
+    record = {
+        "period": month,
+        "is_target": is_target,
+        **cost_details,
+    }
+
+    try:
+        # 既存データを検索
+        existing = supabase.table("financial_cost_details").select("id").eq(
+            "period", month
+        ).eq("is_target", is_target).execute()
+
+        if existing.data:
+            # 更新
+            supabase.table("financial_cost_details").update(record).eq(
+                "id", existing.data[0]["id"]
+            ).execute()
+        else:
+            # 挿入
+            supabase.table("financial_cost_details").insert(record).execute()
+
+    except Exception as e:
+        # 原価明細の保存エラーはログに記録するが、全体の成功には影響しない
+        print(f"原価明細の保存エラー: {str(e)}")
+
+
+async def _import_sga_details(
+    supabase: Client,
+    month: str,
+    is_target: bool,
+    sga_details: Dict[str, Any]
+) -> None:
+    """
+    販管費明細をDBに保存する
+
+    Args:
+        supabase: Supabaseクライアント
+        month: 対象月
+        is_target: 目標値かどうか
+        sga_details: 販管費明細データ
+    """
+    record = {
+        "period": month,
+        "is_target": is_target,
+        **sga_details,
+    }
+
+    try:
+        # 既存データを検索
+        existing = supabase.table("financial_sga_details").select("id").eq(
+            "period", month
+        ).eq("is_target", is_target).execute()
+
+        if existing.data:
+            # 更新
+            supabase.table("financial_sga_details").update(record).eq(
+                "id", existing.data[0]["id"]
+            ).execute()
+        else:
+            # 挿入
+            supabase.table("financial_sga_details").insert(record).execute()
+
+    except Exception as e:
+        # 販管費明細の保存エラーはログに記録するが、全体の成功には影響しない
+        print(f"販管費明細の保存エラー: {str(e)}")
 
 
 # =============================================================================

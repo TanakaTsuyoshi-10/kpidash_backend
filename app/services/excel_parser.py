@@ -167,6 +167,39 @@ def parse_int_value(value: Any) -> Optional[int]:
 
 
 # =============================================================================
+# 売上原価明細項目マッピング
+# =============================================================================
+
+COST_DETAIL_MAPPING = {
+    "仕入高": "purchases",
+    "原材料仕入高": "raw_material_purchases",
+    "労務費": "labor_cost",
+    "消耗品費": "consumables",
+    "賃借料": "rent",
+    "修繕費": "repairs",
+    "水道光熱費": "utilities",
+    # 「その他」はDB側で計算されるため保存しない
+}
+
+# =============================================================================
+# 販管費明細項目マッピング
+# =============================================================================
+
+SGA_DETAIL_MAPPING = {
+    "役員報酬": "executive_compensation",
+    "人件費（販管費）": "personnel_cost",
+    "人件費": "personnel_cost",
+    "配送費": "delivery_cost",
+    "包装費": "packaging_cost",
+    "支払手数料": "payment_fees",
+    "荷造運賃費": "freight_cost",
+    "販売手数料": "sales_commission",
+    "広告宣伝費": "advertising_cost",
+    # 「その他」はDB側で計算されるため保存しない
+}
+
+
+# =============================================================================
 # 財務データExcelパース
 # =============================================================================
 
@@ -265,6 +298,16 @@ def parse_financial_excel(file_content: bytes) -> Dict[str, Any]:
 
         result["data"] = data
 
+        # 売上原価明細シートのパース
+        cost_details = _parse_cost_detail_sheet(wb, result["month"])
+        if cost_details:
+            result["cost_details"] = cost_details
+
+        # 販管費明細シートのパース
+        sga_details = _parse_sga_detail_sheet(wb, result["month"])
+        if sga_details:
+            result["sga_details"] = sga_details
+
         # バリデーション
         errors = validate_financial_data(data, result["month"])
         result["errors"].extend(errors)
@@ -280,6 +323,78 @@ def parse_financial_excel(file_content: bytes) -> Dict[str, Any]:
         })
 
     return result
+
+
+def _parse_cost_detail_sheet(wb, month: str) -> Optional[Dict[str, Any]]:
+    """
+    売上原価明細シートをパースする
+
+    Args:
+        wb: openpyxlワークブック
+        month: 対象月（メインシートから取得）
+
+    Returns:
+        原価明細データまたはNone
+    """
+    sheet_name = "売上原価明細"
+    if sheet_name not in wb.sheetnames:
+        return None
+
+    ws = wb[sheet_name]
+    data = {}
+
+    # 項目を探して値を取得
+    for row_idx in range(1, ws.max_row + 1):
+        cell_value = get_cell_value(ws.cell(row=row_idx, column=1))
+        if cell_value and isinstance(cell_value, str):
+            item_name = cell_value.strip()
+            if item_name in COST_DETAIL_MAPPING:
+                value = get_cell_value(ws.cell(row=row_idx, column=2))
+                numeric_value = parse_numeric_value(value)
+                if numeric_value is not None:
+                    db_column = COST_DETAIL_MAPPING[item_name]
+                    data[db_column] = float(numeric_value)
+
+    if not data:
+        return None
+
+    return data
+
+
+def _parse_sga_detail_sheet(wb, month: str) -> Optional[Dict[str, Any]]:
+    """
+    販管費明細シートをパースする
+
+    Args:
+        wb: openpyxlワークブック
+        month: 対象月（メインシートから取得）
+
+    Returns:
+        販管費明細データまたはNone
+    """
+    sheet_name = "販管費明細"
+    if sheet_name not in wb.sheetnames:
+        return None
+
+    ws = wb[sheet_name]
+    data = {}
+
+    # 項目を探して値を取得
+    for row_idx in range(1, ws.max_row + 1):
+        cell_value = get_cell_value(ws.cell(row=row_idx, column=1))
+        if cell_value and isinstance(cell_value, str):
+            item_name = cell_value.strip()
+            if item_name in SGA_DETAIL_MAPPING:
+                value = get_cell_value(ws.cell(row=row_idx, column=2))
+                numeric_value = parse_numeric_value(value)
+                if numeric_value is not None:
+                    db_column = SGA_DETAIL_MAPPING[item_name]
+                    data[db_column] = float(numeric_value)
+
+    if not data:
+        return None
+
+    return data
 
 
 def validate_financial_data(data: Dict[str, Any], month: str) -> List[Dict[str, Any]]:
