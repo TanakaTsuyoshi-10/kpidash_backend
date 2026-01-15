@@ -649,12 +649,14 @@ async def get_ecommerce_trend(
         fiscal_year = get_fiscal_year(date.today())
 
     # 会計年度の月リストを生成（9月〜翌8月）
+    # 例: 2026年度 = 2025年9月〜2026年8月
     months = []
     for i in range(12):
         m = 9 + i
-        y = fiscal_year if m <= 12 else fiscal_year + 1
         if m > 12:
             m -= 12
+        # 9-12月は年度の前年、1-8月は年度の年
+        y = fiscal_year - 1 if m >= 9 else fiscal_year
         months.append(date(y, m, 1).isoformat())
 
     # 前年の月リスト
