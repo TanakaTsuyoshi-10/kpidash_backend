@@ -8,7 +8,7 @@
 """
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 from supabase import Client
 
@@ -63,6 +63,88 @@ def _to_decimal(value: Any) -> Optional[Decimal]:
         return Decimal(str(value))
     except (ValueError, TypeError):
         return None
+
+
+def _get_period_range(
+    base_period: date,
+    period_type: str,
+    fiscal_year_start_month: int = 9
+) -> Tuple[List[date], date, date]:
+    """
+    期間タイプに応じた月リストと開始/終了日を取得する
+
+    Args:
+        base_period: 基準月
+        period_type: 期間タイプ（monthly/quarterly/yearly）
+        fiscal_year_start_month: 会計年度開始月（デフォルト9月）
+
+    Returns:
+        Tuple[List[date], date, date]: (月リスト, 開始日, 終了日)
+    """
+    if period_type == "monthly":
+        return [base_period], base_period, base_period
+
+    if period_type == "quarterly":
+        # 四半期の計算（9月開始の会計年度）
+        # Q1: 9-11月, Q2: 12-2月, Q3: 3-5月, Q4: 6-8月
+        month = base_period.month
+        year = base_period.year
+
+        # 四半期の開始月を決定
+        if month in [9, 10, 11]:
+            q_start_month = 9
+            q_year = year
+        elif month == 12:
+            q_start_month = 12
+            q_year = year
+        elif month in [1, 2]:
+            q_start_month = 12
+            q_year = year - 1
+        elif month in [3, 4, 5]:
+            q_start_month = 3
+            q_year = year
+        elif month in [6, 7, 8]:
+            q_start_month = 6
+            q_year = year
+        else:
+            q_start_month = month
+            q_year = year
+
+        months = []
+        for i in range(3):
+            m = q_start_month + i
+            y = q_year
+            if m > 12:
+                m -= 12
+                y += 1
+            months.append(date(y, m, 1))
+
+        return months, months[0], months[-1]
+
+    if period_type == "yearly":
+        # 会計年度（9月～翌8月）
+        year = base_period.year
+        month = base_period.month
+
+        # 会計年度の開始年を決定
+        if month >= fiscal_year_start_month:
+            fiscal_year = year
+        else:
+            fiscal_year = year - 1
+
+        months = []
+        for i in range(12):
+            m = fiscal_year_start_month + i
+            y = fiscal_year
+            if m > 12:
+                m -= 12
+                y += 1
+            months.append(date(y, m, 1))
+
+        return months, months[0], months[-1]
+
+    # デフォルト: 単月
+    return [base_period], base_period, base_period
 
 
 # =============================================================================
@@ -335,6 +417,7 @@ async def get_store_pl_list(
     period: date,
     department_slug: str = "store",
     is_target: bool = False,
+    period_type: str = "monthly",
 ) -> StorePLListResponse:
     """
     店舗別収支一覧を取得する（目標・達成率込み）
@@ -344,6 +427,7 @@ async def get_store_pl_list(
         period: 対象月
         department_slug: 部門スラッグ
         is_target: 目標フラグ
+        period_type: 期間タイプ（monthly/quarterly/yearly）
 
     Returns:
         StorePLListResponse
@@ -355,7 +439,7 @@ async def get_store_pl_list(
         ).execute()
 
         if not dept_response.data:
-            return StorePLListResponse(period=period, stores=[])
+            return StorePLListResponse(period=period, stores=[], period_type=period_type)
 
         dept_id = dept_response.data[0]["id"]
 
@@ -365,36 +449,83 @@ async def get_store_pl_list(
         ).eq("department_id", dept_id).order("code").execute()
 
         if not segments_response.data:
-            return StorePLListResponse(period=period, stores=[])
+            return StorePLListResponse(period=period, stores=[], period_type=period_type)
 
         segment_map = {s["id"]: s for s in segments_response.data}
         segment_ids = list(segment_map.keys())
 
-        # 店舗別収支データを取得（実績）
+        # 期間範囲を取得
+        periods, start_period, end_period = _get_period_range(period, period_type)
+        period_strings = [p.isoformat() for p in periods]
+
+        # 店舗別収支データを取得（実績）- 期間内の全データ
         pl_response = supabase.table("store_pl").select(
             "*, store_pl_sga_details(*)"
-        ).eq("period", period.isoformat()).eq(
+        ).in_("period", period_strings).eq(
             "is_target", False
         ).in_("segment_id", segment_ids).execute()
 
-        pl_map = {p["segment_id"]: p for p in (pl_response.data or [])}
+        # セグメントIDごとにデータを集約
+        pl_map: Dict[str, Dict[str, Any]] = {}
+        for p in (pl_response.data or []):
+            seg_id = p["segment_id"]
+            if seg_id not in pl_map:
+                pl_map[seg_id] = {
+                    "sales": Decimal("0"),
+                    "cost_of_sales": Decimal("0"),
+                    "gross_profit": Decimal("0"),
+                    "sga_total": Decimal("0"),
+                    "operating_profit": Decimal("0"),
+                    "sga_personnel_cost": Decimal("0"),
+                    "sga_land_rent": Decimal("0"),
+                    "sga_lease_cost": Decimal("0"),
+                    "sga_utilities": Decimal("0"),
+                }
+            pl_map[seg_id]["sales"] += _to_decimal(p.get("sales")) or Decimal("0")
+            pl_map[seg_id]["cost_of_sales"] += _to_decimal(p.get("cost_of_sales")) or Decimal("0")
+            pl_map[seg_id]["gross_profit"] += _to_decimal(p.get("gross_profit")) or Decimal("0")
+            pl_map[seg_id]["sga_total"] += _to_decimal(p.get("sga_total")) or Decimal("0")
+            pl_map[seg_id]["operating_profit"] += _to_decimal(p.get("operating_profit")) or Decimal("0")
 
-        # 目標データを取得
+            # 販管費明細を集約
+            sga_details_list = p.get("store_pl_sga_details", [])
+            if sga_details_list:
+                sd = sga_details_list[0] if isinstance(sga_details_list, list) else sga_details_list
+                pl_map[seg_id]["sga_personnel_cost"] += _to_decimal(sd.get("personnel_cost")) or Decimal("0")
+                pl_map[seg_id]["sga_land_rent"] += _to_decimal(sd.get("land_rent")) or Decimal("0")
+                pl_map[seg_id]["sga_lease_cost"] += _to_decimal(sd.get("lease_cost")) or Decimal("0")
+                pl_map[seg_id]["sga_utilities"] += _to_decimal(sd.get("utilities")) or Decimal("0")
+
+        # 目標データを取得（期間内の全データを集約）
         target_response = supabase.table("store_pl").select(
             "segment_id, sales, operating_profit"
-        ).eq("period", period.isoformat()).eq(
+        ).in_("period", period_strings).eq(
             "is_target", True
         ).in_("segment_id", segment_ids).execute()
 
-        target_map = {p["segment_id"]: p for p in (target_response.data or [])}
+        target_map: Dict[str, Dict[str, Decimal]] = {}
+        for p in (target_response.data or []):
+            seg_id = p["segment_id"]
+            if seg_id not in target_map:
+                target_map[seg_id] = {"sales": Decimal("0"), "operating_profit": Decimal("0")}
+            target_map[seg_id]["sales"] += _to_decimal(p.get("sales")) or Decimal("0")
+            target_map[seg_id]["operating_profit"] += _to_decimal(p.get("operating_profit")) or Decimal("0")
 
-        # 前年データを取得（前年比計算用）
-        prev_period = date(period.year - 1, period.month, 1)
-        prev_response = supabase.table("store_pl").select("*").eq(
-            "period", prev_period.isoformat()
+        # 前年データを取得（同じ期間タイプで前年分）
+        prev_periods = [date(p.year - 1, p.month, 1) for p in periods]
+        prev_period_strings = [p.isoformat() for p in prev_periods]
+
+        prev_response = supabase.table("store_pl").select("*").in_(
+            "period", prev_period_strings
         ).eq("is_target", False).in_("segment_id", segment_ids).execute()
 
-        prev_map = {p["segment_id"]: p for p in (prev_response.data or [])}
+        prev_map: Dict[str, Dict[str, Decimal]] = {}
+        for p in (prev_response.data or []):
+            seg_id = p["segment_id"]
+            if seg_id not in prev_map:
+                prev_map[seg_id] = {"sales": Decimal("0"), "operating_profit": Decimal("0")}
+            prev_map[seg_id]["sales"] += _to_decimal(p.get("sales")) or Decimal("0")
+            prev_map[seg_id]["operating_profit"] += _to_decimal(p.get("operating_profit")) or Decimal("0")
 
         # レスポンス構築
         stores: List[StorePL] = []
@@ -410,25 +541,32 @@ async def get_store_pl_list(
             prev_data = prev_map.get(segment_id)
 
             if pl_data:
-                sales = _to_decimal(pl_data.get("sales")) or Decimal("0")
-                cost = _to_decimal(pl_data.get("cost_of_sales")) or Decimal("0")
-                gross = _to_decimal(pl_data.get("gross_profit")) or (sales - cost)
-                sga = _to_decimal(pl_data.get("sga_total")) or Decimal("0")
-                op = _to_decimal(pl_data.get("operating_profit")) or (gross - sga)
+                sales = pl_data.get("sales", Decimal("0"))
+                cost = pl_data.get("cost_of_sales", Decimal("0"))
+                gross = pl_data.get("gross_profit", Decimal("0"))
+                sga = pl_data.get("sga_total", Decimal("0"))
+                op = pl_data.get("operating_profit", Decimal("0"))
 
-                # 目標値
-                sales_target = _to_decimal(target_data.get("sales")) if target_data else None
-                op_target = _to_decimal(target_data.get("operating_profit")) if target_data else None
+                # 売上総利益が0で売上原価があれば再計算
+                if gross == Decimal("0") and sales > Decimal("0"):
+                    gross = sales - cost
 
-                # 販管費明細
+                # 営業利益が0で売上総利益があれば再計算
+                if op == Decimal("0") and gross > Decimal("0"):
+                    op = gross - sga
+
+                # 目標値（集約済み）
+                sales_target = target_data.get("sales") if target_data else None
+                op_target = target_data.get("operating_profit") if target_data else None
+
+                # 販管費明細（集約済み）
                 sga_detail = None
-                sga_details_list = pl_data.get("store_pl_sga_details", [])
-                if sga_details_list:
-                    sd = sga_details_list[0] if isinstance(sga_details_list, list) else sga_details_list
-                    personnel = _to_decimal(sd.get("personnel_cost")) or Decimal("0")
-                    land_rent = _to_decimal(sd.get("land_rent")) or Decimal("0")
-                    lease = _to_decimal(sd.get("lease_cost")) or Decimal("0")
-                    utilities = _to_decimal(sd.get("utilities")) or Decimal("0")
+                personnel = pl_data.get("sga_personnel_cost", Decimal("0"))
+                land_rent = pl_data.get("sga_land_rent", Decimal("0"))
+                lease = pl_data.get("sga_lease_cost", Decimal("0"))
+                utilities = pl_data.get("sga_utilities", Decimal("0"))
+
+                if personnel > 0 or land_rent > 0 or lease > 0 or utilities > 0:
                     detail_total = personnel + land_rent + lease + utilities
                     others = sga - detail_total if sga > detail_total else Decimal("0")
 
@@ -440,9 +578,9 @@ async def get_store_pl_list(
                         others=others,
                     )
 
-                # 前年比
-                prev_sales = _to_decimal(prev_data.get("sales")) if prev_data else None
-                prev_op = _to_decimal(prev_data.get("operating_profit")) if prev_data else None
+                # 前年比（集約済み）
+                prev_sales = prev_data.get("sales") if prev_data else None
+                prev_op = prev_data.get("operating_profit") if prev_data else None
                 sales_yoy = _calculate_yoy_rate(sales, prev_sales)
                 op_yoy = _calculate_yoy_rate(op, prev_op)
 
@@ -479,8 +617,8 @@ async def get_store_pl_list(
             else:
                 # データがない店舗も一覧に含める
                 # 目標値のみある場合も取得
-                sales_target = _to_decimal(target_data.get("sales")) if target_data else None
-                op_target = _to_decimal(target_data.get("operating_profit")) if target_data else None
+                sales_target = target_data.get("sales") if target_data else None
+                op_target = target_data.get("operating_profit") if target_data else None
 
                 stores.append(StorePL(
                     store_id=str(segment_id),
@@ -504,6 +642,9 @@ async def get_store_pl_list(
             total_gross_profit=total_gross,
             total_sga=total_sga,
             total_operating_profit=total_op,
+            period_type=period_type,
+            start_period=start_period,
+            end_period=end_period,
         )
 
     except Exception as e:

@@ -328,7 +328,7 @@ class StorePLUploadResult(BaseModel):
 
 class StorePLListResponse(BaseModel):
     """店舗別収支一覧レスポンス"""
-    period: date_type = Field(..., description="対象月")
+    period: date_type = Field(..., description="対象月（基準月）")
     stores: List[StorePL] = Field(default_factory=list, description="店舗別収支リスト")
 
     # 合計
@@ -337,6 +337,11 @@ class StorePLListResponse(BaseModel):
     total_gross_profit: Decimal = Field(default=Decimal("0"), description="売上総利益合計")
     total_sga: Decimal = Field(default=Decimal("0"), description="販管費合計")
     total_operating_profit: Decimal = Field(default=Decimal("0"), description="営業利益合計")
+
+    # 期間情報
+    period_type: str = Field(default="monthly", description="期間タイプ（monthly/quarterly/yearly）")
+    start_period: Optional[date_type] = Field(None, description="期間開始月")
+    end_period: Optional[date_type] = Field(None, description="期間終了月")
 
     class Config:
         from_attributes = True

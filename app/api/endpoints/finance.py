@@ -96,15 +96,22 @@ async def financial_analysis(
     - 各店舗の売上高、売上原価、売上総利益、販管費、営業利益
     - 販管費の明細展開（人件費、地代家賃、賃借料、水道光熱費、その他）
     - 前年比較
+    - 期間タイプ（月次/四半期/年度）による集計
 
     ## パラメータ
     - month: 対象月（YYYY-MM-01形式）
     - department_slug: 部門スラッグ（デフォルト: store）
+    - period_type: 期間タイプ（monthly/quarterly/yearly、デフォルト: monthly）
     """,
 )
 async def store_pl_list(
     month: date = Query(..., description="対象月（YYYY-MM-01形式）"),
     department_slug: str = Query("store", description="部門スラッグ"),
+    period_type: str = Query(
+        "monthly",
+        description="期間タイプ（monthly/quarterly/yearly）",
+        regex="^(monthly|quarterly|yearly)$"
+    ),
     current_user: User = Depends(get_current_user),
     supabase: Client = Depends(get_supabase_admin),
 ) -> StorePLListResponse:
@@ -114,6 +121,7 @@ async def store_pl_list(
     Args:
         month: 対象月
         department_slug: 部門スラッグ
+        period_type: 期間タイプ
 
     Returns:
         StorePLListResponse: 店舗別収支一覧
@@ -123,6 +131,7 @@ async def store_pl_list(
             supabase=supabase,
             period=month,
             department_slug=department_slug,
+            period_type=period_type,
         )
     except Exception as e:
         raise HTTPException(
