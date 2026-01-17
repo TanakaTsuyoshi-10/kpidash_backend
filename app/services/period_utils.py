@@ -116,14 +116,14 @@ def get_period_range(
         Tuple[date, date, str]: (開始日, 終了日, 期間ラベル)
 
     Examples:
-        >>> get_period_range("monthly", 2025, month=11)
+        >>> get_period_range("monthly", 2026, month=11)
         (date(2025, 11, 1), date(2025, 11, 30), "2025年11月")
 
-        >>> get_period_range("quarterly", 2025, quarter=1)
-        (date(2025, 9, 1), date(2025, 11, 30), "2025年度Q1")
+        >>> get_period_range("quarterly", 2026, quarter=1)
+        (date(2025, 9, 1), date(2025, 11, 30), "2026年度Q1")
 
-        >>> get_period_range("yearly", 2025)
-        (date(2025, 9, 1), date(2026, 8, 31), "2025年度")
+        >>> get_period_range("yearly", 2026)
+        (date(2025, 9, 1), date(2026, 8, 31), "2026年度")
     """
     if period_type == "monthly":
         return _get_monthly_range(year, month)
@@ -167,23 +167,37 @@ def _get_monthly_range(fiscal_year: int, month: int) -> Tuple[date, date, str]:
 
 
 def _get_quarterly_range(fiscal_year: int, quarter: int) -> Tuple[date, date, str]:
-    """四半期の期間を取得する"""
+    """四半期の期間を取得する
+
+    年度と四半期の定義:
+    - 2026年度Q1 = 2025年9月〜11月
+    - 2026年度Q2 = 2025年12月〜2026年2月
+    - 2026年度Q3 = 2026年3月〜5月
+    - 2026年度Q4 = 2026年6月〜8月
+
+    Args:
+        fiscal_year: 年度（例: 2026）
+        quarter: 四半期（1-4）
+
+    Returns:
+        開始日、終了日、ラベル
+    """
     months = get_quarter_months(quarter)
     start_month, _, end_month = months
 
-    # 開始日の年を計算
+    # 年度からカレンダー年を計算（9月始まりの年度）
     if quarter == 1:
-        # Q1: 9-11月 → fiscal_year年
+        # Q1: 9-11月 → fiscal_year - 1年（年度の前年）
+        start_year = fiscal_year - 1
+        end_year = fiscal_year - 1
+    elif quarter == 2:
+        # Q2: 12-2月 → 12月はfiscal_year - 1年、1-2月はfiscal_year年
+        start_year = fiscal_year - 1
+        end_year = fiscal_year
+    else:
+        # Q3, Q4: fiscal_year年
         start_year = fiscal_year
         end_year = fiscal_year
-    elif quarter == 2:
-        # Q2: 12-2月 → 12月はfiscal_year年、1-2月はfiscal_year+1年
-        start_year = fiscal_year
-        end_year = fiscal_year + 1
-    else:
-        # Q3, Q4: 翌年
-        start_year = fiscal_year + 1
-        end_year = fiscal_year + 1
 
     start_date = date(start_year, start_month, 1)
     _, last_day = calendar.monthrange(end_year, end_month)
@@ -194,9 +208,23 @@ def _get_quarterly_range(fiscal_year: int, quarter: int) -> Tuple[date, date, st
 
 
 def _get_yearly_range(fiscal_year: int) -> Tuple[date, date, str]:
-    """年度の期間を取得する"""
-    start_date = date(fiscal_year, FISCAL_YEAR_START_MONTH, 1)
-    end_year = fiscal_year + 1
+    """年度の期間を取得する
+
+    年度の定義:
+    - 2026年度 = 2025年9月1日〜2026年8月31日
+    - 9月始まりの年度は、カレンダー年で言うと前年9月〜当年8月
+
+    Args:
+        fiscal_year: 年度（例: 2026）
+
+    Returns:
+        開始日、終了日、ラベル
+    """
+    # 年度の前年の9月から開始
+    start_year = fiscal_year - 1
+    start_date = date(start_year, FISCAL_YEAR_START_MONTH, 1)
+    # 年度と同じ年の8月で終了
+    end_year = fiscal_year
     end_month = FISCAL_YEAR_START_MONTH - 1  # 8月
     _, last_day = calendar.monthrange(end_year, end_month)
     end_date = date(end_year, end_month, last_day)
