@@ -122,7 +122,7 @@ def _get_period_range(
         return months, months[0], months[-1]
 
     if period_type == "yearly":
-        # 会計年度（9月～翌8月）
+        # 会計年度累計（9月から選択した月まで）
         year = base_period.year
         month = base_period.month
 
@@ -132,14 +132,27 @@ def _get_period_range(
         else:
             fiscal_year = year - 1
 
+        # 9月から選択した月までの期間を生成
         months = []
-        for i in range(12):
-            m = fiscal_year_start_month + i
-            y = fiscal_year
-            if m > 12:
-                m -= 12
-                y += 1
-            months.append(date(y, m, 1))
+        current_month = fiscal_year_start_month
+        current_year = fiscal_year
+
+        while True:
+            months.append(date(current_year, current_month, 1))
+
+            # 選択した月に到達したら終了
+            if current_year == base_period.year and current_month == base_period.month:
+                break
+
+            # 次の月へ
+            current_month += 1
+            if current_month > 12:
+                current_month = 1
+                current_year += 1
+
+            # 安全のため12ヶ月を超えたら終了
+            if len(months) >= 12:
+                break
 
         return months, months[0], months[-1]
 
@@ -369,19 +382,22 @@ async def get_financial_analysis(
     Returns:
         FinancialAnalysisResponse
     """
-    # 今期データを取得（実績）
-    current = await get_financial_summary_with_details(supabase, period, is_target=False)
+    if period_type == "cumulative":
+        # 累計: 年度開始（9月）から選択した月までのデータを合算
+        current = await _get_cumulative_financial_summary(supabase, period, is_target=False)
+        prev_period = date(period.year - 1, period.month, 1)
+        previous_year = await _get_cumulative_financial_summary(supabase, prev_period, is_target=False)
+        target = await _get_cumulative_financial_summary(supabase, period, is_target=True)
+    else:
+        # 単月
+        current = await get_financial_summary_with_details(supabase, period, is_target=False)
+        prev_period = date(period.year - 1, period.month, 1)
+        previous_year = await get_financial_summary_with_details(supabase, prev_period, is_target=False)
+        target = await get_financial_summary_with_details(supabase, period, is_target=True)
 
     if current is None:
         # データがない場合はデフォルト値
         current = FinancialSummaryWithDetails(period=period)
-
-    # 前年同月データを取得
-    prev_period = date(period.year - 1, period.month, 1)
-    previous_year = await get_financial_summary_with_details(supabase, prev_period, is_target=False)
-
-    # 目標データを取得
-    target = await get_financial_summary_with_details(supabase, period, is_target=True)
 
     # 前年比計算
     sales_yoy = _calculate_yoy_rate(current.sales_total, previous_year.sales_total if previous_year else None)
@@ -405,6 +421,100 @@ async def get_financial_analysis(
         sales_achievement_rate=sales_achievement,
         gross_profit_achievement_rate=gross_profit_achievement,
         operating_profit_achievement_rate=operating_profit_achievement,
+    )
+
+
+async def _get_cumulative_financial_summary(
+    supabase: Client,
+    end_period: date,
+    is_target: bool = False,
+) -> Optional[FinancialSummaryWithDetails]:
+    """
+    年度累計の財務サマリーを取得する（9月から指定月まで）
+
+    Args:
+        supabase: Supabaseクライアント
+        end_period: 終了月
+        is_target: 目標フラグ
+
+    Returns:
+        FinancialSummaryWithDetails or None
+    """
+    # 年度開始月（9月）を決定
+    fiscal_year_start_month = 9
+    year = end_period.year
+    month = end_period.month
+
+    if month >= fiscal_year_start_month:
+        start_year = year
+    else:
+        start_year = year - 1
+
+    # 期間リストを生成（9月から選択月まで）
+    periods = []
+    current_month = fiscal_year_start_month
+    current_year = start_year
+
+    while True:
+        periods.append(date(current_year, current_month, 1))
+
+        if current_year == end_period.year and current_month == end_period.month:
+            break
+
+        current_month += 1
+        if current_month > 12:
+            current_month = 1
+            current_year += 1
+
+        if len(periods) >= 12:
+            break
+
+    period_strings = [p.isoformat() for p in periods]
+
+    # 財務データを取得
+    response = supabase.table("financial_data").select("*").in_(
+        "month", period_strings
+    ).eq("is_target", is_target).execute()
+
+    if not response.data:
+        return None
+
+    # 合算
+    total_sales = Decimal("0")
+    total_sales_store = Decimal("0")
+    total_sales_online = Decimal("0")
+    total_cost_of_sales = Decimal("0")
+    total_gross_profit = Decimal("0")
+    total_sga = Decimal("0")
+    total_operating_profit = Decimal("0")
+
+    for row in response.data:
+        total_sales += _to_decimal(row.get("sales_total")) or Decimal("0")
+        total_sales_store += _to_decimal(row.get("sales_store")) or Decimal("0")
+        total_sales_online += _to_decimal(row.get("sales_online")) or Decimal("0")
+        total_cost_of_sales += _to_decimal(row.get("cost_of_sales")) or Decimal("0")
+        total_gross_profit += _to_decimal(row.get("gross_profit")) or Decimal("0")
+        total_sga += _to_decimal(row.get("sg_and_a_total")) or Decimal("0")
+        total_operating_profit += _to_decimal(row.get("operating_profit")) or Decimal("0")
+
+    # 利益率を計算
+    gross_profit_rate = (total_gross_profit / total_sales * 100) if total_sales else None
+    operating_profit_rate = (total_operating_profit / total_sales * 100) if total_sales else None
+
+    # 原価明細・販管費明細は累計では省略（複雑なため）
+    return FinancialSummaryWithDetails(
+        period=end_period,
+        sales_total=total_sales,
+        sales_store=total_sales_store,
+        sales_online=total_sales_online,
+        cost_of_sales=total_cost_of_sales,
+        cost_of_sales_detail=None,
+        gross_profit=total_gross_profit,
+        gross_profit_rate=gross_profit_rate,
+        sga_total=total_sga,
+        sga_detail=None,
+        operating_profit=total_operating_profit,
+        operating_profit_rate=operating_profit_rate,
     )
 
 
