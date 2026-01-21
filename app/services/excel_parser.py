@@ -233,7 +233,14 @@ def parse_financial_excel(file_content: bytes) -> Dict[str, Any]:
     try:
         # Excelファイルを読み込み（data_only=Trueで数式の計算結果を取得）
         wb = load_workbook(io.BytesIO(file_content), data_only=True)
-        ws = wb.active
+
+        # 「月次財務データ」シートを明示的に指定（アクティブシートに依存しない）
+        target_sheet_name = "月次財務データ"
+        if target_sheet_name in wb.sheetnames:
+            ws = wb[target_sheet_name]
+        else:
+            # シート名が異なる場合はアクティブシートを使用
+            ws = wb.active
 
         if ws is None:
             result["errors"].append({
