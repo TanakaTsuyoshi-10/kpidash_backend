@@ -4,6 +4,7 @@
 経営層向けダッシュボードのデータ取得と計算を行うサービス。
 財務データ、店舗・通販データを統合し、前年比・予算比を計算して返す。
 """
+import asyncio
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Optional, Dict, Any
@@ -35,7 +36,7 @@ from app.services.cache_service import cached, cache
 # メイン関数
 # =============================================================================
 
-@cached(prefix="dashboard", ttl=300)  # 5分キャッシュ
+@cached(prefix="dashboard", ttl=1800)  # 30分キャッシュ
 async def get_dashboard_data(
     supabase: Client,
     period_type: str = "monthly",
@@ -68,22 +69,24 @@ async def get_dashboard_data(
         period_type, year, month, quarter
     )
 
-    # 各セクションのデータを取得
-    company_summary = await get_company_summary(
-        supabase, start_date, end_date, period_type, year, period_label
+    # 各セクションのデータを並列取得
+    (
+        company_summary,
+        department_performance,
+        cash_flow,
+        management_indicators,
+        chart_data,
+        alerts,
+        complaint_summary,
+    ) = await asyncio.gather(
+        get_company_summary(supabase, start_date, end_date, period_type, year, period_label),
+        get_department_performance(supabase, start_date, end_date),
+        get_cash_flow(supabase, start_date, end_date),
+        get_management_indicators(supabase, start_date, end_date),
+        get_chart_data(supabase, months=12),
+        get_alerts(supabase, start_date, end_date),
+        complaint_service.get_dashboard_summary(supabase, start_date),
     )
-    department_performance = await get_department_performance(
-        supabase, start_date, end_date
-    )
-    cash_flow = await get_cash_flow(supabase, start_date, end_date)
-    management_indicators = await get_management_indicators(
-        supabase, start_date, end_date
-    )
-    chart_data = await get_chart_data(supabase, months=12)
-    alerts = await get_alerts(supabase, start_date, end_date)
-
-    # クレームサマリーを取得
-    complaint_summary = await complaint_service.get_dashboard_summary(supabase, start_date)
 
     return DashboardResponse(
         company_summary=company_summary,
@@ -376,62 +379,46 @@ async def get_chart_data(
     Returns:
         List[ChartDataPoint]: グラフデータリスト
     """
-    chart_data = []
-
-    # 現在の月から過去N ヶ月のデータを取得
+    # 現在の月から過去N ヶ月の対象月リストを構築
     today = date.today()
     current_month = date(today.year, today.month, 1)
 
+    month_list = []
     for i in range(months - 1, -1, -1):
-        # i ヶ月前の月を計算
         month_offset = current_month.month - i - 1
         year = current_month.year + (month_offset // 12)
         month = (month_offset % 12) + 1
         if month <= 0:
             month += 12
             year -= 1
+        month_list.append(date(year, month, 1))
 
-        target_month = date(year, month, 1)
+    month_strings = [m.isoformat() for m in month_list]
 
-        # 月次の財務データを取得
-        response = supabase.table("financial_data").select(
-            "sales_total, operating_profit"
-        ).eq(
-            "month", target_month.isoformat()
-        ).eq(
-            "is_target", False
-        ).execute()
+    # 2クエリで全データを一括取得（N+1解消: 24クエリ → 2クエリ）
+    actual_response = supabase.table("financial_data").select(
+        "month, sales_total, operating_profit"
+    ).in_("month", month_strings).eq("is_target", False).execute()
 
-        # 目標データを取得
-        target_response = supabase.table("financial_data").select(
-            "sales_total, operating_profit"
-        ).eq(
-            "month", target_month.isoformat()
-        ).eq(
-            "is_target", True
-        ).execute()
+    target_response = supabase.table("financial_data").select(
+        "month, sales_total, operating_profit"
+    ).in_("month", month_strings).eq("is_target", True).execute()
 
-        sales = None
-        operating_profit = None
-        sales_target = None
-        operating_profit_target = None
+    actual_by_month = {row["month"]: row for row in (actual_response.data or [])}
+    target_by_month = {row["month"]: row for row in (target_response.data or [])}
 
-        if response.data:
-            row = response.data[0]
-            sales = Decimal(str(row["sales_total"])) if row.get("sales_total") else None
-            operating_profit = Decimal(str(row["operating_profit"])) if row.get("operating_profit") else None
-
-        if target_response.data:
-            row = target_response.data[0]
-            sales_target = Decimal(str(row["sales_total"])) if row.get("sales_total") else None
-            operating_profit_target = Decimal(str(row["operating_profit"])) if row.get("operating_profit") else None
+    chart_data = []
+    for target_month in month_list:
+        month_str = target_month.isoformat()
+        actual = actual_by_month.get(month_str, {})
+        target = target_by_month.get(month_str, {})
 
         chart_data.append(ChartDataPoint(
             month=target_month.strftime("%Y-%m"),
-            sales=sales,
-            operating_profit=operating_profit,
-            sales_target=sales_target,
-            operating_profit_target=operating_profit_target,
+            sales=Decimal(str(actual["sales_total"])) if actual.get("sales_total") else None,
+            operating_profit=Decimal(str(actual["operating_profit"])) if actual.get("operating_profit") else None,
+            sales_target=Decimal(str(target["sales_total"])) if target.get("sales_total") else None,
+            operating_profit_target=Decimal(str(target["operating_profit"])) if target.get("operating_profit") else None,
         ))
 
     return chart_data

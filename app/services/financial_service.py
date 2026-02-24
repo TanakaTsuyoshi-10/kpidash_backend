@@ -6,11 +6,14 @@
 - 店舗別収支データ
 - 前年比較
 """
+import asyncio
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, List, Dict, Any, Tuple
 
 from supabase import Client
+
+from app.services.cache_service import cached
 
 from app.schemas.financial import (
     CostOfSalesDetail,
@@ -329,14 +332,10 @@ async def get_financial_summary_with_details(
         cost_of_sales = _to_decimal(row.get("cost_of_sales"))
         sga_total = _to_decimal(row.get("sg_and_a_total"))
 
-        # 売上原価明細を取得
-        cost_detail = await get_cost_of_sales_detail(
-            supabase, period, cost_of_sales, is_target
-        )
-
-        # 販管費明細を取得
-        sga_detail = await get_sga_detail(
-            supabase, period, sga_total, is_target
+        # 売上原価明細・販管費明細を並列取得
+        cost_detail, sga_detail = await asyncio.gather(
+            get_cost_of_sales_detail(supabase, period, cost_of_sales, is_target),
+            get_sga_detail(supabase, period, sga_total, is_target),
         )
 
         return FinancialSummaryWithDetails(
@@ -366,6 +365,7 @@ async def get_financial_summary_with_details(
 # 財務分析（前年比較込み）
 # =============================================================================
 
+@cached(prefix="finance", ttl=1800)
 async def get_financial_analysis(
     supabase: Client,
     period: date,
@@ -382,18 +382,21 @@ async def get_financial_analysis(
     Returns:
         FinancialAnalysisResponse
     """
+    prev_period = date(period.year - 1, period.month, 1)
     if period_type == "cumulative":
-        # 累計: 年度開始（9月）から選択した月までのデータを合算
-        current = await _get_cumulative_financial_summary(supabase, period, is_target=False)
-        prev_period = date(period.year - 1, period.month, 1)
-        previous_year = await _get_cumulative_financial_summary(supabase, prev_period, is_target=False)
-        target = await _get_cumulative_financial_summary(supabase, period, is_target=True)
+        # 累計: 年度開始（9月）から選択した月までのデータを合算（並列取得）
+        current, previous_year, target = await asyncio.gather(
+            _get_cumulative_financial_summary(supabase, period, is_target=False),
+            _get_cumulative_financial_summary(supabase, prev_period, is_target=False),
+            _get_cumulative_financial_summary(supabase, period, is_target=True),
+        )
     else:
-        # 単月
-        current = await get_financial_summary_with_details(supabase, period, is_target=False)
-        prev_period = date(period.year - 1, period.month, 1)
-        previous_year = await get_financial_summary_with_details(supabase, prev_period, is_target=False)
-        target = await get_financial_summary_with_details(supabase, period, is_target=True)
+        # 単月（並列取得）
+        current, previous_year, target = await asyncio.gather(
+            get_financial_summary_with_details(supabase, period, is_target=False),
+            get_financial_summary_with_details(supabase, prev_period, is_target=False),
+            get_financial_summary_with_details(supabase, period, is_target=True),
+        )
 
     if current is None:
         # データがない場合はデフォルト値
@@ -519,9 +522,53 @@ async def _get_cumulative_financial_summary(
 
 
 # =============================================================================
+# マスターデータキャッシュ
+# =============================================================================
+
+@cached(prefix="master", ttl=3600)
+async def _get_department_id(supabase: Client, slug: str) -> Optional[str]:
+    """部門IDをキャッシュ付きで取得（1時間キャッシュ）"""
+    response = supabase.table("departments").select("id").eq("slug", slug).execute()
+    if not response.data:
+        return None
+    return response.data[0]["id"]
+
+
+@cached(prefix="master", ttl=3600)
+async def _get_segments_by_dept(supabase: Client, dept_id: str) -> List[Dict]:
+    """店舗一覧をキャッシュ付きで取得（1時間キャッシュ）"""
+    response = supabase.table("segments").select(
+        "id, code, name"
+    ).eq("department_id", dept_id).order("code").execute()
+    return response.data or []
+
+
+# =============================================================================
 # 店舗別収支取得
 # =============================================================================
 
+async def _fetch_store_pl_actual(supabase: Client, period_strings: List[str], segment_ids: List[str]):
+    """実績データを取得（販管費明細含む）"""
+    return supabase.table("store_pl").select(
+        "*, store_pl_sga_details(*)"
+    ).in_("period", period_strings).eq("is_target", False).in_("segment_id", segment_ids).execute()
+
+
+async def _fetch_store_pl_target(supabase: Client, period_strings: List[str], segment_ids: List[str]):
+    """目標データを取得"""
+    return supabase.table("store_pl").select(
+        "segment_id, sales, operating_profit"
+    ).in_("period", period_strings).eq("is_target", True).in_("segment_id", segment_ids).execute()
+
+
+async def _fetch_store_pl_prev(supabase: Client, prev_period_strings: List[str], segment_ids: List[str]):
+    """前年実績データを取得"""
+    return supabase.table("store_pl").select("*").in_(
+        "period", prev_period_strings
+    ).eq("is_target", False).in_("segment_id", segment_ids).execute()
+
+
+@cached(prefix="store_pl", ttl=1800)
 async def get_store_pl_list(
     supabase: Client,
     period: date,
@@ -543,37 +590,31 @@ async def get_store_pl_list(
         StorePLListResponse
     """
     try:
-        # 部門IDを取得
-        dept_response = supabase.table("departments").select("id").eq(
-            "slug", department_slug
-        ).execute()
-
-        if not dept_response.data:
+        # 部門IDをキャッシュ付きで取得
+        dept_id = await _get_department_id(supabase, department_slug)
+        if not dept_id:
             return StorePLListResponse(period=period, stores=[], period_type=period_type)
 
-        dept_id = dept_response.data[0]["id"]
-
-        # 店舗一覧を取得
-        segments_response = supabase.table("segments").select(
-            "id, code, name"
-        ).eq("department_id", dept_id).order("code").execute()
-
-        if not segments_response.data:
+        # 店舗一覧をキャッシュ付きで取得
+        segments_data = await _get_segments_by_dept(supabase, dept_id)
+        if not segments_data:
             return StorePLListResponse(period=period, stores=[], period_type=period_type)
 
-        segment_map = {s["id"]: s for s in segments_response.data}
+        segment_map = {s["id"]: s for s in segments_data}
         segment_ids = list(segment_map.keys())
 
         # 期間範囲を取得
         periods, start_period, end_period = _get_period_range(period, period_type)
         period_strings = [p.isoformat() for p in periods]
+        prev_periods = [date(p.year - 1, p.month, 1) for p in periods]
+        prev_period_strings = [p.isoformat() for p in prev_periods]
 
-        # 店舗別収支データを取得（実績）- 期間内の全データ
-        pl_response = supabase.table("store_pl").select(
-            "*, store_pl_sga_details(*)"
-        ).in_("period", period_strings).eq(
-            "is_target", False
-        ).in_("segment_id", segment_ids).execute()
+        # 実績・目標・前年データを並列取得
+        pl_response, target_response, prev_response = await asyncio.gather(
+            _fetch_store_pl_actual(supabase, period_strings, segment_ids),
+            _fetch_store_pl_target(supabase, period_strings, segment_ids),
+            _fetch_store_pl_prev(supabase, prev_period_strings, segment_ids),
+        )
 
         # セグメントIDごとにデータを集約
         pl_map: Dict[str, Dict[str, Any]] = {}
@@ -606,13 +647,6 @@ async def get_store_pl_list(
                 pl_map[seg_id]["sga_lease_cost"] += _to_decimal(sd.get("lease_cost")) or Decimal("0")
                 pl_map[seg_id]["sga_utilities"] += _to_decimal(sd.get("utilities")) or Decimal("0")
 
-        # 目標データを取得（期間内の全データを集約）
-        target_response = supabase.table("store_pl").select(
-            "segment_id, sales, operating_profit"
-        ).in_("period", period_strings).eq(
-            "is_target", True
-        ).in_("segment_id", segment_ids).execute()
-
         target_map: Dict[str, Dict[str, Decimal]] = {}
         for p in (target_response.data or []):
             seg_id = p["segment_id"]
@@ -620,14 +654,6 @@ async def get_store_pl_list(
                 target_map[seg_id] = {"sales": Decimal("0"), "operating_profit": Decimal("0")}
             target_map[seg_id]["sales"] += _to_decimal(p.get("sales")) or Decimal("0")
             target_map[seg_id]["operating_profit"] += _to_decimal(p.get("operating_profit")) or Decimal("0")
-
-        # 前年データを取得（同じ期間タイプで前年分）
-        prev_periods = [date(p.year - 1, p.month, 1) for p in periods]
-        prev_period_strings = [p.isoformat() for p in prev_periods]
-
-        prev_response = supabase.table("store_pl").select("*").in_(
-            "period", prev_period_strings
-        ).eq("is_target", False).in_("segment_id", segment_ids).execute()
 
         prev_map: Dict[str, Dict[str, Decimal]] = {}
         for p in (prev_response.data or []):

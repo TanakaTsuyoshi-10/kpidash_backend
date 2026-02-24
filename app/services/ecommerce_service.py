@@ -4,12 +4,14 @@
 通販チャネル別・商品別・顧客別実績およびHPアクセス数の
 データ取得・集計ロジックを提供する。
 """
+import asyncio
 from datetime import date
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from supabase import Client
 
+from app.services.cache_service import cached
 from app.services.metrics import (
     get_fiscal_year,
     get_previous_year_month,
@@ -96,6 +98,21 @@ def calculate_achievement_rate(actual: Optional[Decimal], target: Optional[Decim
     return round(float(result), 1)
 
 
+async def _fetch_channel_sales_all(supabase: Client, months: List[str]):
+    """チャネル別売上を全データ取得（実績+目標）"""
+    return supabase.table("ecommerce_channel_sales").select(
+        "channel, sales, buyers, is_target"
+    ).in_("month", months).execute()
+
+
+async def _fetch_channel_sales_target(supabase: Client, months: List[str]):
+    """チャネル別売上目標データのみ取得"""
+    return supabase.table("ecommerce_channel_sales").select(
+        "channel, sales, buyers"
+    ).in_("month", months).eq("is_target", True).execute()
+
+
+@cached(prefix="ecommerce", ttl=1800)
 async def get_channel_summary(
     supabase: Client,
     target_month: date,
@@ -126,29 +143,16 @@ async def get_channel_summary(
         prev_months = [get_previous_year_month(target_month).isoformat()]
         two_years_months = [date(target_month.year - 2, target_month.month, 1).isoformat()]
 
-    # 当年実績データ取得（is_target=False または NULL）
-    current_response = supabase.table("ecommerce_channel_sales").select(
-        "channel, sales, buyers, is_target"
-    ).in_("month", current_months).execute()
-    # is_targetがFalseまたはNULLのデータを実績として扱う
+    # 4クエリを並列取得
+    current_response, target_response, prev_response, two_years_response = await asyncio.gather(
+        _fetch_channel_sales_all(supabase, current_months),
+        _fetch_channel_sales_target(supabase, current_months),
+        _fetch_channel_sales_all(supabase, prev_months),
+        _fetch_channel_sales_all(supabase, two_years_months),
+    )
     current_data = [r for r in current_response.data if not r.get("is_target")]
-
-    # 目標データ取得（is_target=True）
-    target_response = supabase.table("ecommerce_channel_sales").select(
-        "channel, sales, buyers"
-    ).in_("month", current_months).eq("is_target", True).execute()
     target_data = target_response.data
-
-    # 前年データ取得（実績のみ）
-    prev_response = supabase.table("ecommerce_channel_sales").select(
-        "channel, sales, buyers, is_target"
-    ).in_("month", prev_months).execute()
     prev_data = [r for r in prev_response.data if not r.get("is_target")]
-
-    # 前々年データ取得（実績のみ）
-    two_years_response = supabase.table("ecommerce_channel_sales").select(
-        "channel, sales, buyers, is_target"
-    ).in_("month", two_years_months).execute()
     two_years_data = [r for r in two_years_response.data if not r.get("is_target")]
 
     # チャネル別に集計
@@ -273,6 +277,7 @@ async def get_channel_summary(
 # 商品別実績取得
 # =============================================================================
 
+@cached(prefix="ecommerce", ttl=1800)
 async def get_product_summary(
     supabase: Client,
     target_month: date,
@@ -397,6 +402,7 @@ async def get_product_summary(
 # 顧客別実績取得
 # =============================================================================
 
+@cached(prefix="ecommerce", ttl=1800)
 async def get_customer_summary(
     supabase: Client,
     target_month: date,
@@ -527,6 +533,7 @@ async def get_customer_summary(
 # HPアクセス数取得
 # =============================================================================
 
+@cached(prefix="ecommerce", ttl=1800)
 async def get_website_stats(
     supabase: Client,
     target_month: date,
