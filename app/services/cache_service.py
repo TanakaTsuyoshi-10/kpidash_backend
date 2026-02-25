@@ -33,8 +33,10 @@ class CacheService:
             k: v for k, v in kwargs.items()
             if not hasattr(v, 'table') and not callable(v)
         }
-        key_data = f"{prefix}:{filtered_args}:{sorted(filtered_kwargs.items())}"
-        return hashlib.md5(key_data.encode()).hexdigest()
+        key_data = f"{filtered_args}:{sorted(filtered_kwargs.items())}"
+        hash_part = hashlib.md5(key_data.encode()).hexdigest()
+        # prefix: を先頭に付けることで clear_prefix が正しく機能する
+        return f"{prefix}:{hash_part}"
 
     def get(self, key: str) -> Optional[Any]:
         """キャッシュからデータを取得"""

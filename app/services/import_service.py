@@ -17,6 +17,8 @@ from uuid import UUID
 
 from supabase import Client
 
+from app.services.cache_service import cache
+
 
 # =============================================================================
 # カテゴリマッピング定義
@@ -168,6 +170,7 @@ async def import_store_kpi(
                     on_conflict="segment_id,kpi_id,date,is_target"
                 ).execute()
             result["imported"] = len(kpi_records)
+            cache.clear_prefix("dashboard")
 
         except Exception as e:
             result["errors"].append(f"KPIバルクインポートに失敗: {str(e)}")
@@ -358,6 +361,7 @@ async def import_product_kpi(
                     on_conflict="segment_id,kpi_id,date,is_target"
                 ).execute()
             result["imported"] = len(kpi_records)
+            cache.clear_prefix("dashboard")
 
         except Exception as e:
             result["errors"].append(f"KPIバルクインポートに失敗: {str(e)}")

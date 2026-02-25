@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from supabase import Client
 
-from app.services.cache_service import cached
+from app.services.cache_service import cached, cache
 from app.services.metrics import (
     get_fiscal_year,
     get_previous_year_month,
@@ -856,6 +856,10 @@ async def import_channel_data(
         if response.data:
             updated += 1
 
+    # アップロード成功後にecommerceキャッシュをクリア
+    if created + updated > 0:
+        cache.clear_prefix("ecommerce")
+
     return {"created": created, "updated": updated}
 
 
@@ -900,6 +904,10 @@ async def import_product_data(
 
         if response.data:
             updated += 1
+
+    # アップロード成功後にecommerceキャッシュをクリア
+    if created + updated > 0:
+        cache.clear_prefix("ecommerce")
 
     return {"created": created, "updated": updated}
 
@@ -949,6 +957,7 @@ async def import_customer_data(
     else:
         supabase.table("ecommerce_customer_stats").insert(data).execute()
 
+    cache.clear_prefix("ecommerce")
     return {"created": 0, "updated": 1}
 
 
@@ -992,4 +1001,5 @@ async def import_website_data(
     else:
         supabase.table("ecommerce_website_stats").insert(data).execute()
 
+    cache.clear_prefix("ecommerce")
     return {"created": 0, "updated": 1}

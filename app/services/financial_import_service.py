@@ -126,7 +126,7 @@ async def import_financial_data(
             result["success"] = True
             # 成功時にキャッシュクリア
             cache.clear_prefix("dashboard")
-            cache.clear_prefix("financial")
+            cache.clear_prefix("finance")
 
             # 原価明細の保存
             cost_details = parsed_data.get("cost_details")
