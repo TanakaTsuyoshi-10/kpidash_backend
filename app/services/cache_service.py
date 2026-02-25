@@ -110,10 +110,13 @@ def cached(prefix: str, ttl: int = 300):
         ...
     """
     def decorator(func: Callable):
+        # 関数名を含めたプレフィックスで異なる関数のキー衝突を防ぐ
+        func_prefix = f"{prefix}:{func.__name__}"
+
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
-            # キャッシュキー生成
-            key = cache._generate_key(prefix, *args, **kwargs)
+            # キャッシュキー生成（関数名込みプレフィックス）
+            key = cache._generate_key(func_prefix, *args, **kwargs)
 
             # キャッシュチェック
             cached_value = cache.get(key)
@@ -130,8 +133,8 @@ def cached(prefix: str, ttl: int = 300):
 
         @wraps(func)
         def sync_wrapper(*args, **kwargs):
-            # キャッシュキー生成
-            key = cache._generate_key(prefix, *args, **kwargs)
+            # キャッシュキー生成（関数名込みプレフィックス）
+            key = cache._generate_key(func_prefix, *args, **kwargs)
 
             # キャッシュチェック
             cached_value = cache.get(key)
