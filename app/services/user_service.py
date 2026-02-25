@@ -16,6 +16,8 @@ from app.schemas.user import (
     UserRoleListResponse,
     UserOperationResult,
     CurrentUserResponse,
+    UserPagePermissionsResponse,
+    ALL_PAGE_KEYS,
 )
 
 
@@ -50,6 +52,69 @@ async def is_admin(supabase: Client, user_id: str) -> bool:
 # 現在のユーザー情報取得
 # =============================================================================
 
+async def get_user_page_permissions(supabase: Client, user_id: str) -> list[str]:
+    """
+    ユーザーのページ閲覧権限を取得する
+
+    Args:
+        supabase: Supabaseクライアント
+        user_id: ユーザーID
+
+    Returns:
+        list[str]: 許可されているページキーの一覧
+    """
+    try:
+        response = supabase.table("user_page_permissions").select(
+            "page_key"
+        ).eq("user_id", user_id).execute()
+
+        return [row["page_key"] for row in (response.data or [])]
+    except Exception:
+        return []
+
+
+async def update_user_page_permissions(
+    supabase: Client,
+    user_id: str,
+    page_keys: list[str],
+    admin_user_id: str,
+) -> UserOperationResult:
+    """
+    ユーザーのページ閲覧権限を更新する（既存を全削除→再挿入）
+
+    Args:
+        supabase: Supabaseクライアント
+        user_id: 対象ユーザーID
+        page_keys: 許可するページキーの一覧
+        admin_user_id: 操作する管理者のID
+
+    Returns:
+        UserOperationResult: 操作結果
+    """
+    try:
+        # 既存の権限を全削除
+        supabase.table("user_page_permissions").delete().eq(
+            "user_id", user_id
+        ).execute()
+
+        # 新しい権限を挿入
+        if page_keys:
+            rows = [{"user_id": user_id, "page_key": key} for key in page_keys]
+            supabase.table("user_page_permissions").insert(rows).execute()
+
+        return UserOperationResult(
+            success=True,
+            message="ページ権限を更新しました",
+            user_id=user_id,
+        )
+    except Exception as e:
+        return UserOperationResult(
+            success=False,
+            message=f"ページ権限の更新に失敗しました: {str(e)}",
+            user_id=None,
+        )
+
+
 async def get_current_user_profile(
     supabase: Client,
     user_id: str,
@@ -71,12 +136,21 @@ async def get_current_user_profile(
 
         if response.data and len(response.data) > 0:
             user = response.data[0]
+            user_role = user["role"]
+
+            # 管理者は全ページを許可、一般ユーザーはDBから取得
+            if user_role == "admin":
+                allowed_pages = ALL_PAGE_KEYS
+            else:
+                allowed_pages = await get_user_page_permissions(supabase, user_id)
+
             return CurrentUserResponse(
                 id=user["id"],
                 email=user["email"],
                 display_name=user.get("display_name"),
-                role=user["role"],
-                is_admin=user["role"] == "admin",
+                role=user_role,
+                is_admin=user_role == "admin",
+                allowed_pages=allowed_pages,
             )
         return None
     except Exception:

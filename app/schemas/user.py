@@ -21,6 +21,20 @@ class UserRole(str, Enum):
     USER = "user"
 
 
+class PageKey(str, Enum):
+    """ページキー"""
+    DASHBOARD = "dashboard"
+    FINANCE = "finance"
+    ECOMMERCE = "ecommerce"
+    MANUFACTURING = "manufacturing"
+    PRODUCTS = "products"
+    UPLOAD = "upload"
+    TARGETS = "targets"
+
+
+ALL_PAGE_KEYS: List[str] = [k.value for k in PageKey]
+
+
 # =============================================================================
 # ユーザー情報スキーマ
 # =============================================================================
@@ -113,3 +127,19 @@ class CurrentUserResponse(BaseModel):
     display_name: Optional[str] = Field(None, description="表示名")
     role: str = Field(..., description="権限")
     is_admin: bool = Field(default=False, description="管理者フラグ")
+    allowed_pages: List[str] = Field(default_factory=list, description="閲覧許可ページ一覧")
+
+
+# =============================================================================
+# ページ権限スキーマ
+# =============================================================================
+
+class UserPagePermissionsUpdate(BaseModel):
+    """ページ権限更新リクエスト"""
+    page_keys: List[PageKey] = Field(default_factory=list, description="許可するページキー一覧")
+
+
+class UserPagePermissionsResponse(BaseModel):
+    """ページ権限レスポンス"""
+    user_id: str = Field(..., description="ユーザーID")
+    allowed_pages: List[str] = Field(default_factory=list, description="閲覧許可ページ一覧")

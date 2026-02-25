@@ -15,6 +15,8 @@ from app.schemas.user import (
     UserRoleListResponse,
     UserOperationResult,
     CurrentUserResponse,
+    UserPagePermissionsUpdate,
+    UserPagePermissionsResponse,
 )
 from app.services import user_service
 
@@ -112,6 +114,55 @@ async def get_users(
         return await user_service.get_user_list(supabase)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# ページ権限取得・更新（管理者用）
+# =============================================================================
+
+@router.get(
+    "/{user_id}/permissions",
+    response_model=UserPagePermissionsResponse,
+    summary="ユーザーページ権限取得",
+    description="指定したユーザーのページ閲覧権限を取得する。管理者権限が必要。",
+)
+async def get_user_permissions(
+    user_id: str,
+    current_user = Depends(require_admin),
+    supabase: Client = Depends(get_supabase_admin),
+):
+    """ユーザーのページ権限を取得する（管理者用）。"""
+    try:
+        allowed_pages = await user_service.get_user_page_permissions(supabase, user_id)
+        return UserPagePermissionsResponse(user_id=user_id, allowed_pages=allowed_pages)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put(
+    "/{user_id}/permissions",
+    response_model=UserOperationResult,
+    summary="ユーザーページ権限更新",
+    description="指定したユーザーのページ閲覧権限を更新する。管理者権限が必要。",
+)
+async def update_user_permissions(
+    user_id: str,
+    data: UserPagePermissionsUpdate,
+    current_user = Depends(require_admin),
+    supabase: Client = Depends(get_supabase_admin),
+):
+    """ユーザーのページ権限を更新する（管理者用）。"""
+    admin_user_id = current_user.user_id
+    page_keys = [k.value for k in data.page_keys]
+
+    result = await user_service.update_user_page_permissions(
+        supabase, user_id, page_keys, admin_user_id
+    )
+
+    if not result.success:
+        raise HTTPException(status_code=400, detail=result.message)
+
+    return result
 
 
 # =============================================================================
