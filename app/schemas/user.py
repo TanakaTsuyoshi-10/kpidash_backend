@@ -27,6 +27,7 @@ class PageKey(str, Enum):
     FINANCE = "finance"
     ECOMMERCE = "ecommerce"
     MANUFACTURING = "manufacturing"
+    COMPLAINTS = "complaints"
     PRODUCTS = "products"
     UPLOAD = "upload"
     TARGETS = "targets"

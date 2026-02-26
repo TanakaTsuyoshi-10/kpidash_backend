@@ -5,7 +5,7 @@ CREATE TABLE user_page_permissions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES user_profiles(id) ON DELETE CASCADE,
   page_key VARCHAR(50) NOT NULL CHECK (page_key IN (
-    'dashboard', 'finance', 'ecommerce', 'manufacturing', 'products', 'upload', 'targets'
+    'dashboard', 'finance', 'ecommerce', 'manufacturing', 'complaints', 'products', 'upload', 'targets'
   )),
   created_at TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE (user_id, page_key)
