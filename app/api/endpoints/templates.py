@@ -59,25 +59,26 @@ def generate_financial_template(year: int, month: int) -> io.BytesIO:
     ws["A2"] = "データ区分"
     ws["B2"] = "実績"
 
+    # row=4から開始: B5=全社売上, B9=売上原価, B10=粗利, B13=販管費, B15=営業利益
     items = [
-        ("■ 売上高", None, None, True),
-        ("全社売上高", None, "円", False),
-        ("店舗部門売上高", None, "円", False),
-        ("通販部門売上高", None, "円", False),
-        ("■ 原価・利益", None, None, True),
-        ("売上原価", None, "円", False),
-        ("売上総利益（粗利）", "=B6-B10", "円", False),
-        ("粗利率", "=IF(B6>0,B11/B6*100,0)", "%", False),
-        ("■ 販管費", None, None, True),
-        ("販管費合計", None, "円", False),
-        ("■ 営業利益", None, None, True),
-        ("営業利益", "=B11-B14", "円", False),
-        ("営業利益率", "=IF(B6>0,B16/B6*100,0)", "%", False),
-        ("■ キャッシュフロー", None, None, True),
-        ("営業キャッシュフロー", None, "円", False),
-        ("投資キャッシュフロー", None, "円", False),
-        ("財務キャッシュフロー", None, "円", False),
-        ("フリーキャッシュフロー", "=B19+B20", "円", False),
+        ("■ 売上高", None, None, True),                          # row 4
+        ("全社売上高", None, "円", False),                        # row 5 (B5)
+        ("店舗部門売上高", None, "円", False),                    # row 6
+        ("通販部門売上高", None, "円", False),                    # row 7
+        ("■ 原価・利益", None, None, True),                      # row 8
+        ("売上原価", None, "円", False),                          # row 9 (B9)
+        ("売上総利益（粗利）", "=B5-B9", "円", False),           # row 10 (B10)
+        ("粗利率", "=IF(B5>0,B10/B5*100,0)", "%", False),        # row 11
+        ("■ 販管費", None, None, True),                          # row 12
+        ("販管費合計", None, "円", False),                        # row 13 (B13)
+        ("■ 営業利益", None, None, True),                        # row 14
+        ("営業利益", "=B10-B13", "円", False),                   # row 15 (B15)
+        ("営業利益率", "=IF(B5>0,B15/B5*100,0)", "%", False),    # row 16
+        ("■ キャッシュフロー", None, None, True),                # row 17
+        ("営業キャッシュフロー", None, "円", False),              # row 18 (B18)
+        ("投資キャッシュフロー", None, "円", False),              # row 19
+        ("財務キャッシュフロー", None, "円", False),              # row 20
+        ("フリーキャッシュフロー", "=B18+B19", "円", False),     # row 21
     ]
 
     row = 4
@@ -103,17 +104,19 @@ def generate_financial_template(year: int, month: int) -> io.BytesIO:
     ws2["A1"] = "対象年月"
     ws2["B1"] = f"{year}/{month:02d}/01"
 
+    # row=3から開始: B4=仕入高, B10=水道光熱費, B11=その他, B12=合計参照
+    # シート1のB9=売上原価
     cost_items = [
-        ("■ 売上原価内訳", None, None, True),
-        ("仕入高", None, "円", False),
-        ("原材料仕入高", None, "円", False),
-        ("労務費", None, "円", False),
-        ("消耗品費", None, "円", False),
-        ("賃借料", None, "円", False),
-        ("修繕費", None, "円", False),
-        ("水道光熱費", None, "円", False),
-        ("その他", "=月次財務データ!B10-SUM(B5:B11)", "円", False),
-        ("売上原価合計（参照）", "=月次財務データ!B10", "円", True),
+        ("■ 売上原価内訳", None, None, True),                              # row 3
+        ("仕入高", None, "円", False),                                     # row 4 (B4)
+        ("原材料仕入高", None, "円", False),                               # row 5
+        ("労務費", None, "円", False),                                     # row 6
+        ("消耗品費", None, "円", False),                                   # row 7
+        ("賃借料", None, "円", False),                                     # row 8
+        ("修繕費", None, "円", False),                                     # row 9
+        ("水道光熱費", None, "円", False),                                 # row 10
+        ("その他", "=月次財務データ!B9-SUM(B4:B10)", "円", False),         # row 11
+        ("売上原価合計（参照）", "=月次財務データ!B9", "円", True),         # row 12
     ]
 
     row = 3
@@ -139,18 +142,20 @@ def generate_financial_template(year: int, month: int) -> io.BytesIO:
     ws3["A1"] = "対象年月"
     ws3["B1"] = f"{year}/{month:02d}/01"
 
+    # row=3から開始: B4=役員報酬, B11=広告宣伝費, B12=その他, B13=合計参照
+    # シート1のB13=販管費合計
     sga_items = [
-        ("■ 販管費内訳", None, None, True),
-        ("役員報酬", None, "円", False),
-        ("人件費（販管費）", None, "円", False),
-        ("配送費", None, "円", False),
-        ("包装費", None, "円", False),
-        ("支払手数料", None, "円", False),
-        ("荷造運賃費", None, "円", False),
-        ("販売手数料", None, "円", False),
-        ("広告宣伝費", None, "円", False),
-        ("その他", "=月次財務データ!B14-SUM(B5:B12)", "円", False),
-        ("販管費合計（参照）", "=月次財務データ!B14", "円", True),
+        ("■ 販管費内訳", None, None, True),                                # row 3
+        ("役員報酬", None, "円", False),                                   # row 4 (B4)
+        ("人件費（販管費）", None, "円", False),                           # row 5
+        ("配送費", None, "円", False),                                     # row 6
+        ("包装費", None, "円", False),                                     # row 7
+        ("支払手数料", None, "円", False),                                 # row 8
+        ("荷造運賃費", None, "円", False),                                 # row 9
+        ("販売手数料", None, "円", False),                                 # row 10
+        ("広告宣伝費", None, "円", False),                                 # row 11
+        ("その他", "=月次財務データ!B13-SUM(B4:B11)", "円", False),        # row 12
+        ("販管費合計（参照）", "=月次財務データ!B13", "円", True),          # row 13
     ]
 
     row = 3
