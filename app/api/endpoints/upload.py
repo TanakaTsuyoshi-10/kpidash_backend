@@ -45,6 +45,7 @@ from app.services.import_service import (
     import_product_kpi,
     get_segments_for_department,
 )
+from app.services.cache_service import cache
 from app.services.excel_parser import (
     parse_financial_excel,
     parse_manufacturing_excel,
@@ -214,6 +215,11 @@ async def upload_store_kpi(
     all_errors = parsed["errors"] + import_result.get("errors", [])
     all_warnings = parsed["warnings"] + import_result.get("warnings", [])
 
+    # インポート成功時にKPIキャッシュを無効化
+    if len(all_errors) == 0:
+        cache.clear_prefix("kpi")
+        cache.clear_prefix("dashboard")
+
     return StoreKPIUploadResult(
         success=len(all_errors) == 0,
         period=parsed["period"],
@@ -343,6 +349,11 @@ async def upload_product_kpi(
     # 結果をまとめる
     all_errors = parsed["errors"] + import_result.get("errors", [])
     all_warnings = parsed["warnings"] + import_result.get("warnings", [])
+
+    # インポート成功時にKPIキャッシュを無効化
+    if len(all_errors) == 0:
+        cache.clear_prefix("kpi")
+        cache.clear_prefix("dashboard")
 
     return ProductKPIUploadResult(
         success=len(all_errors) == 0,

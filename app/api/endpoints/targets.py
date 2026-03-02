@@ -21,6 +21,7 @@ from app.schemas.target import (
     TargetSettingResult,
 )
 from app.services import target_service
+from app.services.cache_service import cache
 
 router = APIRouter()
 
@@ -102,7 +103,10 @@ async def save_store_targets(
             }
             for t in data.targets
         ]
-        return await target_service.bulk_upsert_targets(supabase, targets)
+        result = await target_service.bulk_upsert_targets(supabase, targets)
+        cache.clear_prefix("kpi")
+        cache.clear_prefix("dashboard")
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -144,9 +148,12 @@ async def save_financial_targets(
     try:
         user_id = current_user.user_id
         user_email = current_user.email
-        return await target_service.save_financial_targets(
+        result = await target_service.save_financial_targets(
             supabase, data, user_id, user_email
         )
+        cache.clear_prefix("kpi")
+        cache.clear_prefix("dashboard")
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -188,8 +195,11 @@ async def save_ecommerce_targets(
     try:
         user_id = current_user.user_id
         user_email = current_user.email
-        return await target_service.save_ecommerce_targets(
+        result = await target_service.save_ecommerce_targets(
             supabase, data, user_id, user_email
         )
+        cache.clear_prefix("kpi")
+        cache.clear_prefix("dashboard")
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
