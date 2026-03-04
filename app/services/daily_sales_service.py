@@ -102,19 +102,37 @@ async def get_daily_sales_summary(
             "totals": [],
         }
 
-    # 当月データ取得（1000行制限回避）
-    current_data = _fetch_all(
+    # 当月売上データ取得（1000行制限回避）
+    current_sales = _fetch_all(
         supabase.table("hourly_sales").select(
-            "date, segment_id, sales, receipt_count"
+            "date, segment_id, sales"
         ).gte("date", start.isoformat()).lte(
             "date", end.isoformat()
         ).in_("segment_id", segment_ids)
     )
 
-    # 前年同月データ取得
-    prev_data = _fetch_all(
+    # 当月客数データ取得（hourly_customers: ユニーク客数）
+    current_customers = _fetch_all(
+        supabase.table("hourly_customers").select(
+            "date, segment_id, customer_count"
+        ).gte("date", start.isoformat()).lte(
+            "date", end.isoformat()
+        ).in_("segment_id", segment_ids)
+    )
+
+    # 前年同月売上データ取得
+    prev_sales = _fetch_all(
         supabase.table("hourly_sales").select(
-            "date, segment_id, sales, receipt_count"
+            "date, segment_id, sales"
+        ).gte("date", prev_start.isoformat()).lte(
+            "date", prev_end.isoformat()
+        ).in_("segment_id", segment_ids)
+    )
+
+    # 前年同月客数データ取得
+    prev_customers = _fetch_all(
+        supabase.table("hourly_customers").select(
+            "date, segment_id, customer_count"
         ).gte("date", prev_start.isoformat()).lte(
             "date", prev_end.isoformat()
         ).in_("segment_id", segment_ids)
@@ -124,19 +142,23 @@ async def get_daily_sales_summary(
     current_agg: Dict[tuple, Dict[str, Any]] = defaultdict(
         lambda: {"sales": 0.0, "customers": 0}
     )
-    for row in current_data:
+    for row in current_sales:
         key = (row["date"], row["segment_id"])
         current_agg[key]["sales"] += float(row["sales"])
-        current_agg[key]["customers"] += int(row["receipt_count"])
+    for row in current_customers:
+        key = (row["date"], row["segment_id"])
+        current_agg[key]["customers"] += int(row["customer_count"])
 
     # 前年: (date, segment_id) でグループ集計
     prev_agg: Dict[tuple, Dict[str, Any]] = defaultdict(
         lambda: {"sales": 0.0, "customers": 0}
     )
-    for row in prev_data:
+    for row in prev_sales:
         key = (row["date"], row["segment_id"])
         prev_agg[key]["sales"] += float(row["sales"])
-        prev_agg[key]["customers"] += int(row["receipt_count"])
+    for row in prev_customers:
+        key = (row["date"], row["segment_id"])
+        prev_agg[key]["customers"] += int(row["customer_count"])
 
     # 日付リスト生成
     dates = []
@@ -278,10 +300,17 @@ async def get_hourly_sales(
             "col_totals": [],
         }
 
-    # データ取得（1000行制限回避）
-    hourly_data = _fetch_all(
+    # 売上データ取得（1000行制限回避）
+    hourly_sales_data = _fetch_all(
         supabase.table("hourly_sales").select(
-            "hour, segment_id, sales, receipt_count"
+            "hour, segment_id, sales"
+        ).eq("date", target_date).in_("segment_id", segment_ids)
+    )
+
+    # 客数データ取得（hourly_customers: ユニーク客数）
+    hourly_cust_data = _fetch_all(
+        supabase.table("hourly_customers").select(
+            "hour, segment_id, customer_count"
         ).eq("date", target_date).in_("segment_id", segment_ids)
     )
 
@@ -291,10 +320,14 @@ async def get_hourly_sales(
     )
     hours_set = set()
 
-    for row in hourly_data:
+    for row in hourly_sales_data:
         key = (row["hour"], row["segment_id"])
         agg[key]["sales"] += float(row["sales"])
-        agg[key]["customers"] += int(row["receipt_count"])
+        hours_set.add(row["hour"])
+
+    for row in hourly_cust_data:
+        key = (row["hour"], row["segment_id"])
+        agg[key]["customers"] += int(row["customer_count"])
         hours_set.add(row["hour"])
 
     # 営業時間帯（9〜19時をデフォルト、データがあればそちらを使う）
@@ -398,48 +431,66 @@ async def get_daily_trend(
         ).eq("id", segment_id).single().execute()
         segment_name = seg_response.data["name"]
 
-    # 当月データ（1000行制限回避）
-    query = supabase.table("hourly_sales").select(
-        "date, sales, receipt_count"
+    # 当月売上データ（1000行制限回避）
+    sales_query = supabase.table("hourly_sales").select(
+        "date, sales"
+    ).gte("date", start.isoformat()).lte("date", end.isoformat())
+
+    # 当月客数データ
+    cust_query = supabase.table("hourly_customers").select(
+        "date, customer_count"
     ).gte("date", start.isoformat()).lte("date", end.isoformat())
 
     if segment_id:
-        query = query.eq("segment_id", segment_id)
+        sales_query = sales_query.eq("segment_id", segment_id)
+        cust_query = cust_query.eq("segment_id", segment_id)
     else:
         segments = await _get_segments(supabase, department_slug)
         segment_ids = [s["id"] for s in segments]
         if segment_ids:
-            query = query.in_("segment_id", segment_ids)
+            sales_query = sales_query.in_("segment_id", segment_ids)
+            cust_query = cust_query.in_("segment_id", segment_ids)
 
-    current_data = _fetch_all(query)
+    current_sales_data = _fetch_all(sales_query)
+    current_cust_data = _fetch_all(cust_query)
 
-    # 前年同月データ
-    prev_query = supabase.table("hourly_sales").select(
-        "date, sales, receipt_count"
+    # 前年同月売上データ
+    prev_sales_query = supabase.table("hourly_sales").select(
+        "date, sales"
+    ).gte("date", prev_start.isoformat()).lte("date", prev_end.isoformat())
+
+    # 前年同月客数データ
+    prev_cust_query = supabase.table("hourly_customers").select(
+        "date, customer_count"
     ).gte("date", prev_start.isoformat()).lte("date", prev_end.isoformat())
 
     if segment_id:
-        prev_query = prev_query.eq("segment_id", segment_id)
+        prev_sales_query = prev_sales_query.eq("segment_id", segment_id)
+        prev_cust_query = prev_cust_query.eq("segment_id", segment_id)
     else:
         if segment_ids:
-            prev_query = prev_query.in_("segment_id", segment_ids)
+            prev_sales_query = prev_sales_query.in_("segment_id", segment_ids)
+            prev_cust_query = prev_cust_query.in_("segment_id", segment_ids)
 
-    prev_data = _fetch_all(prev_query)
+    prev_sales_data = _fetch_all(prev_sales_query)
+    prev_cust_data = _fetch_all(prev_cust_query)
 
     # 日別に集計
     current_daily: Dict[str, Dict[str, Any]] = defaultdict(
         lambda: {"sales": 0.0, "customers": 0}
     )
-    for row in current_data:
+    for row in current_sales_data:
         current_daily[row["date"]]["sales"] += float(row["sales"])
-        current_daily[row["date"]]["customers"] += int(row["receipt_count"])
+    for row in current_cust_data:
+        current_daily[row["date"]]["customers"] += int(row["customer_count"])
 
     prev_daily: Dict[str, Dict[str, Any]] = defaultdict(
         lambda: {"sales": 0.0, "customers": 0}
     )
-    for row in prev_data:
+    for row in prev_sales_data:
         prev_daily[row["date"]]["sales"] += float(row["sales"])
-        prev_daily[row["date"]]["customers"] += int(row["receipt_count"])
+    for row in prev_cust_data:
+        prev_daily[row["date"]]["customers"] += int(row["customer_count"])
 
     # 日次データ作成
     current_year = []

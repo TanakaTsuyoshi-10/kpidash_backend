@@ -116,7 +116,7 @@ async def import_receipt_journal(
         result["errors"].append("有効なデータがありません（全店舗がマスタ未登録）")
         return result
 
-    # upsertレコード作成
+    # upsertレコード作成（hourly_sales: 商品別）
     records = []
     for (dt, hour, seg_id, product_name), agg in aggregated.items():
         records.append({
@@ -130,14 +130,40 @@ async def import_receipt_journal(
             "receipt_count": len(agg["receipt_numbers"]),
         })
 
+    # hourly_customers: (date, hour, segment_id) 単位のユニーク客数
+    # 同一レシート番号は同一客として集計
+    CustomerKey = Tuple[str, int, str]
+    customer_receipts: Dict[CustomerKey, Set[str]] = defaultdict(set)
+    for (dt, hour, seg_id, _product_name), agg in aggregated.items():
+        customer_receipts[(dt, hour, seg_id)].update(agg["receipt_numbers"])
+
+    customer_records = []
+    for (dt, hour, seg_id), receipts in customer_receipts.items():
+        customer_records.append({
+            "date": dt,
+            "hour": hour,
+            "segment_id": seg_id,
+            "customer_count": len(receipts),
+        })
+
     # バッチupsert（500件ずつ）
     try:
         batch_size = 500
+
+        # hourly_sales
         for i in range(0, len(records), batch_size):
             batch = records[i:i + batch_size]
             supabase.table("hourly_sales").upsert(
                 batch,
                 on_conflict="date,hour,segment_id,product_name"
+            ).execute()
+
+        # hourly_customers
+        for i in range(0, len(customer_records), batch_size):
+            batch = customer_records[i:i + batch_size]
+            supabase.table("hourly_customers").upsert(
+                batch,
+                on_conflict="date,hour,segment_id"
             ).execute()
 
         result["success"] = True
