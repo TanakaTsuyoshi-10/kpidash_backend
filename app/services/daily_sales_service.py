@@ -18,12 +18,16 @@ from app.services.cache_service import cached
 # =============================================================================
 
 def _fetch_all(query_builder) -> list:
-    """Supabaseの1000行制限を回避して全行を取得する"""
+    """Supabaseの1000行制限を回避して全行を取得する
+
+    ORDER BYを指定しないとPostgreSQLがリクエストごとに異なる順序で返すため、
+    ページネーション時に行の重複・欠落が発生する。idでソートして安定化させる。
+    """
     all_data = []
     offset = 0
     batch = 1000
     while True:
-        result = query_builder.range(offset, offset + batch - 1).execute()
+        result = query_builder.order("id").range(offset, offset + batch - 1).execute()
         all_data.extend(result.data)
         if len(result.data) < batch:
             break
