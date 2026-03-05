@@ -15,7 +15,7 @@ from app.core.config import settings
 from app.core.security_config import security_config
 from app.middleware.rate_limiter import RateLimitMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
-from app.api.endpoints import auth, upload, kpi, products, ecommerce, comments, regional, templates, dashboard, manufacturing, finance, complaints, targets, users, admin, daily_sales
+from app.api.endpoints import auth, upload, kpi, products, ecommerce, comments, regional, templates, dashboard, manufacturing, finance, complaints, targets, users, admin, daily_sales, order_forecast
 from app.schemas.kpi import HealthResponse, APIInfo
 
 
@@ -120,6 +120,9 @@ app.include_router(admin.router, prefix="/api/v1/admin")
 
 # 日次販売分析エンドポイント
 app.include_router(daily_sales.router, prefix="/daily-sales", tags=["日次販売分析"])
+
+# 予想注文（発注バット数予測）エンドポイント
+app.include_router(order_forecast.router, prefix="/order-forecast", tags=["予想注文"])
 
 
 # =============================================================================
