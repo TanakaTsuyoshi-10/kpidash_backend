@@ -1,7 +1,7 @@
 """
 予想注文（発注バット数予測）のPydanticスキーマ
 """
-from typing import List, Optional
+from typing import Dict, List, Optional
 from pydantic import BaseModel, Field, ConfigDict
 
 
@@ -49,6 +49,31 @@ class ForecastSummary(BaseModel):
     total_bats: float = Field(description="予想バット数合計（全店舗）")
     reference_dates: List[ForecastReference] = Field(description="参照日リスト")
     by_store: List[ForecastStoreBats] = Field(default_factory=list, description="店舗別予測")
+
+
+class ProductRow(BaseModel):
+    """日別 or 時間帯別の商品行"""
+    date: Optional[str] = Field(None, description="日付 (YYYY-MM-DD)")
+    hour: Optional[int] = Field(None, description="時間帯")
+    weekday: Optional[str] = Field(None, description="曜日")
+    products: Dict[str, int] = Field(description="商品名→パック数")
+    total_bats: float = Field(description="バット数合計")
+
+
+class DailyProductBreakdownResponse(BaseModel):
+    """日別商品パック数レスポンス"""
+    year: int = Field(description="年")
+    month: int = Field(description="月")
+    product_columns: List[str] = Field(description="商品列名リスト")
+    rows: List[ProductRow] = Field(default_factory=list, description="日別データ")
+
+
+class HourlyProductBreakdownResponse(BaseModel):
+    """時間帯別商品パック数レスポンス"""
+    date: str = Field(description="日付 (YYYY-MM-DD)")
+    weekday: str = Field(description="曜日")
+    product_columns: List[str] = Field(description="商品列名リスト")
+    rows: List[ProductRow] = Field(default_factory=list, description="時間帯別データ")
 
 
 class OrderForecastResponse(BaseModel):

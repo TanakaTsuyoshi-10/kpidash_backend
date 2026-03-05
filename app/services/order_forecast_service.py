@@ -79,7 +79,7 @@ def _fetch_gyoza_sales(
     """ぎょうざ系商品の販売データを取得する"""
     rows = _fetch_all(
         supabase.table("hourly_sales")
-        .select("date, segment_id, product_name, product_group, quantity")
+        .select("date, hour, segment_id, product_name, product_group, quantity")
         .gte("date", start_date.isoformat())
         .lte("date", end_date.isoformat())
         .in_("segment_id", segment_ids)
@@ -297,6 +297,157 @@ def _build_calendar(
         "year": year,
         "month": month,
         "days": days,
+    }
+
+
+PRODUCT_COLUMNS = [
+    "ぎょうざ20個", "ぎょうざ30個", "ぎょうざ40個", "ぎょうざ50個", "生姜入ぎょうざ30個",
+]
+
+
+def _normalize_product_name(raw: str) -> str:
+    """商品名を正規化する（全角数字→半角、表記揺れ吸収）"""
+    return unicodedata.normalize("NFKC", raw)
+
+
+@cached(prefix="order_forecast_daily_product", ttl=300)
+async def get_daily_product_breakdown(
+    supabase: Client,
+    year: int,
+    month: int,
+    segment_id: Optional[str] = None,
+    department_slug: str = "store",
+) -> Dict[str, Any]:
+    """
+    日別×商品別パック数を返す
+
+    Args:
+        supabase: Supabaseクライアント
+        year: 対象年
+        month: 対象月
+        segment_id: セグメントID（省略時は全店舗合算）
+        department_slug: 部門スラッグ
+    """
+    start = date(year, month, 1)
+    if month == 12:
+        end = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        end = date(year, month + 1, 1) - timedelta(days=1)
+
+    segments = await _get_segments(supabase, department_slug)
+    segment_ids = [s["id"] for s in segments]
+    if not segment_ids:
+        return {"year": year, "month": month, "product_columns": PRODUCT_COLUMNS, "rows": []}
+
+    rows = _fetch_gyoza_sales(supabase, start, end, segment_ids)
+
+    # 日付×商品名別集計
+    # key: (date, normalized_product_name) -> quantity合計
+    agg: Dict[tuple, int] = defaultdict(int)
+    for row in rows:
+        if segment_id and row["segment_id"] != segment_id:
+            continue
+        norm_name = _normalize_product_name(row["product_name"])
+        if norm_name not in PRODUCT_COLUMNS:
+            continue
+        agg[(row["date"], norm_name)] += int(row["quantity"])
+
+    # 日付リスト
+    result_rows = []
+    d = start
+    while d <= end:
+        dt_str = d.isoformat()
+        products = {}
+        total_pieces = 0
+        for col in PRODUCT_COLUMNS:
+            qty = agg.get((dt_str, col), 0)
+            products[col] = qty
+            pack_size = _extract_pack_size(col)
+            total_pieces += qty * pack_size
+
+        result_rows.append({
+            "date": dt_str,
+            "weekday": WEEKDAY_NAMES[d.weekday()],
+            "products": products,
+            "total_bats": round(total_pieces / BATS_DIVISOR, 1),
+        })
+        d += timedelta(days=1)
+
+    return {
+        "year": year,
+        "month": month,
+        "product_columns": PRODUCT_COLUMNS,
+        "rows": result_rows,
+    }
+
+
+@cached(prefix="order_forecast_hourly_product", ttl=300)
+async def get_hourly_product_breakdown(
+    supabase: Client,
+    target_date: str,
+    segment_id: Optional[str] = None,
+    department_slug: str = "store",
+) -> Dict[str, Any]:
+    """
+    特定日の時間帯×商品別パック数を返す
+
+    Args:
+        supabase: Supabaseクライアント
+        target_date: 対象日 (YYYY-MM-DD)
+        segment_id: セグメントID（省略時は全店舗合算）
+        department_slug: 部門スラッグ
+    """
+    d = date.fromisoformat(target_date)
+
+    segments = await _get_segments(supabase, department_slug)
+    segment_ids = [s["id"] for s in segments]
+    if not segment_ids:
+        return {
+            "date": target_date,
+            "weekday": WEEKDAY_NAMES[d.weekday()],
+            "product_columns": PRODUCT_COLUMNS,
+            "rows": [],
+        }
+
+    rows = _fetch_gyoza_sales(supabase, d, d, segment_ids)
+
+    # 時間帯×商品名別集計
+    agg: Dict[tuple, int] = defaultdict(int)
+    hours_seen: set = set()
+    for row in rows:
+        if segment_id and row["segment_id"] != segment_id:
+            continue
+        if row["date"] != target_date:
+            continue
+        norm_name = _normalize_product_name(row["product_name"])
+        if norm_name not in PRODUCT_COLUMNS:
+            continue
+        hour = int(row["hour"])
+        hours_seen.add(hour)
+        agg[(hour, norm_name)] += int(row["quantity"])
+
+    # 時間帯リスト（存在する時間のみ、ソート済み）
+    result_rows = []
+    for hour in sorted(hours_seen):
+        products = {}
+        total_pieces = 0
+        for col in PRODUCT_COLUMNS:
+            qty = agg.get((hour, col), 0)
+            products[col] = qty
+            pack_size = _extract_pack_size(col)
+            total_pieces += qty * pack_size
+
+        result_rows.append({
+            "hour": hour,
+            "products": products,
+            "total_bats": round(total_pieces / BATS_DIVISOR, 1),
+        })
+
+    return {
+        "date": target_date,
+        "weekday": WEEKDAY_NAMES[d.weekday()],
+        "product_columns": PRODUCT_COLUMNS,
+        "rows": result_rows,
     }
 
 
