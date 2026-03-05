@@ -14,8 +14,8 @@ class InputValidator:
     MIN_YEAR = 2020
     MAX_YEAR = 2100
 
-    # ファイルサイズ制限（10MB）
-    MAX_FILE_SIZE = 10 * 1024 * 1024
+    # ファイルサイズ制限（50MB）
+    MAX_FILE_SIZE = 50 * 1024 * 1024
 
     # 許可されるファイル拡張子
     ALLOWED_EXTENSIONS = {".xlsx", ".xls", ".csv"}
