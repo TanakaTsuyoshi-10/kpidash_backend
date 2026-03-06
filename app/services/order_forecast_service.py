@@ -18,6 +18,9 @@ from supabase import Client
 
 from app.services.cache_service import cached
 from app.services.daily_sales_service import _fetch_all, _get_segments
+from app.services.weather_service import (
+    resolve_region_name, get_weather_for_dates, get_weather_for_month
+)
 
 
 # =============================================================================
@@ -248,6 +251,15 @@ async def get_order_forecast(
         two_years_ago, two_yr_month_start.month, two_yr_daily, segments
     )
 
+    # 天気データ取得
+    region_name = await resolve_region_name(supabase, segment_id)
+    weather_dates = [target_date_str, prev_same_day_str, two_yr_same_day_str]
+    weather_map = await get_weather_for_dates(supabase, region_name, weather_dates)
+
+    # 参照日に天気を付与
+    reference_dates[0]["weather"] = weather_map.get(prev_same_day_str)
+    reference_dates[1]["weather"] = weather_map.get(two_yr_same_day_str)
+
     return {
         "target_date": target_date_str,
         "target_weekday": target_weekday,
@@ -255,6 +267,7 @@ async def get_order_forecast(
         "forecast": forecast,
         "previous_year": previous_year_calendar,
         "two_years_ago": two_years_ago_calendar,
+        "weather": weather_map.get(target_date_str),
     }
 
 
@@ -372,6 +385,12 @@ async def get_daily_product_breakdown(
             "total_bats": round(total_pieces / BATS_DIVISOR, 1),
         })
         d += timedelta(days=1)
+
+    # 天気データ取得
+    region_name = await resolve_region_name(supabase, segment_id)
+    month_weather = await get_weather_for_month(supabase, region_name, year, month)
+    for row in result_rows:
+        row["weather"] = month_weather.get(row["date"])
 
     return {
         "year": year,

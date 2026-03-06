@@ -27,12 +27,21 @@ class CalendarMonth(BaseModel):
     days: List[CalendarDay] = Field(default_factory=list, description="日別データ")
 
 
+class WeatherInfo(BaseModel):
+    """天気情報"""
+    weather_code: int = Field(description="WMO天気コード")
+    weather_label: str = Field(description="天気ラベル（日本語）")
+    temp_max: Optional[float] = Field(None, description="最高気温")
+    temp_min: Optional[float] = Field(None, description="最低気温")
+
+
 class ForecastReference(BaseModel):
     """予測参照日データ"""
     year: int = Field(description="年")
     date: str = Field(description="参照日 (YYYY-MM-DD)")
     weekday: str = Field(description="曜日")
     bats: float = Field(description="バット数")
+    weather: Optional[WeatherInfo] = Field(None, description="天気情報")
 
 
 class ForecastStoreBats(BaseModel):
@@ -58,6 +67,7 @@ class ProductRow(BaseModel):
     weekday: Optional[str] = Field(None, description="曜日")
     products: Dict[str, int] = Field(description="商品名→パック数")
     total_bats: float = Field(description="バット数合計")
+    weather: Optional[WeatherInfo] = Field(None, description="天気情報")
 
 
 class DailyProductBreakdownResponse(BaseModel):
@@ -86,3 +96,4 @@ class OrderForecastResponse(BaseModel):
     forecast: ForecastSummary = Field(description="予測サマリー")
     previous_year: CalendarMonth = Field(description="前年同月カレンダー")
     two_years_ago: CalendarMonth = Field(description="前々年同月カレンダー")
+    weather: Optional[WeatherInfo] = Field(None, description="対象日の天気情報")
