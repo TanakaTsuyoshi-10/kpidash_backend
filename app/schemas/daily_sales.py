@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, ConfigDict
 class DailyStoreSalesData(BaseModel):
     """日別×店舗の販売データ"""
     date: str = Field(description="日付 (YYYY-MM-DD)")
+    comparison_date: Optional[str] = Field(None, description="前年比較先日付（同曜日）")
     segment_id: str = Field(description="セグメントID")
     sales: float = Field(description="売上金額")
     customers: int = Field(description="客数（ユニークレシート数）")

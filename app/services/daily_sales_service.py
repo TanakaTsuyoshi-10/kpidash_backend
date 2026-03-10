@@ -226,6 +226,7 @@ async def get_daily_sales_summary(
 
             entry = {
                 "date": dt_str,
+                "comparison_date": prev_date.isoformat() if prev_key else None,
                 "segment_id": seg_id,
                 "sales": sales,
                 "customers": customers,
