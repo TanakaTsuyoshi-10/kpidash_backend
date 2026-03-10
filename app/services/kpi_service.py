@@ -28,6 +28,20 @@ from app.services.cache_service import cached
 PRODUCT_GROUP_CATEGORY = "商品グループ"
 
 
+def _fetch_all(query_builder) -> list:
+    """Supabaseの1000行制限を回避して全行を取得する"""
+    all_data = []
+    offset = 0
+    batch = 1000
+    while True:
+        result = query_builder.range(offset, offset + batch - 1).execute()
+        all_data.extend(result.data)
+        if len(result.data) < batch:
+            break
+        offset += batch
+    return all_data
+
+
 # =============================================================================
 # 部門サマリー取得
 # =============================================================================
@@ -92,13 +106,14 @@ async def get_department_summary(
     # 年度の開始日を取得
     fiscal_start, _ = get_fiscal_year_range(fiscal_year)
 
-    # KPI値を取得（年度開始から対象月まで）
-    values_response = supabase.table("kpi_values").select(
-        "kpi_id, segment_id, date, value, is_target"
-    ).in_("segment_id", segment_ids).gte(
-        "date", fiscal_start.isoformat()
-    ).lte("date", target_month.isoformat()).execute()
-    all_values = values_response.data
+    # KPI値を取得（年度開始から対象月まで、1000行制限回避）
+    all_values = _fetch_all(
+        supabase.table("kpi_values").select(
+            "kpi_id, segment_id, date, value, is_target"
+        ).in_("segment_id", segment_ids).gte(
+            "date", fiscal_start.isoformat()
+        ).lte("date", target_month.isoformat())
+    )
 
     # 前年同月のデータを取得
     prev_year_response = supabase.table("kpi_values").select(
@@ -700,29 +715,32 @@ async def get_product_matrix(
             else:
                 current_date = date(current_date.year, current_date.month + 1, 1)
 
-        # 当年度累計のKPI値を一括取得
-        current_values_response = supabase.table("kpi_values").select(
-            "kpi_id, segment_id, value, date"
-        ).in_("kpi_id", kpi_ids).in_(
-            "segment_id", segment_ids
-        ).in_("date", current_months).eq("is_target", False).execute()
-        current_values = current_values_response.data
+        # 当年度累計のKPI値を一括取得（1000行制限回避）
+        current_values = _fetch_all(
+            supabase.table("kpi_values").select(
+                "kpi_id, segment_id, value, date"
+            ).in_("kpi_id", kpi_ids).in_(
+                "segment_id", segment_ids
+            ).in_("date", current_months).eq("is_target", False)
+        )
 
-        # 前年同期累計のKPI値を一括取得
-        prev_values_response = supabase.table("kpi_values").select(
-            "kpi_id, segment_id, value, date"
-        ).in_("kpi_id", kpi_ids).in_(
-            "segment_id", segment_ids
-        ).in_("date", prev_months).eq("is_target", False).execute()
-        prev_values = prev_values_response.data
+        # 前年同期累計のKPI値を一括取得（1000行制限回避）
+        prev_values = _fetch_all(
+            supabase.table("kpi_values").select(
+                "kpi_id, segment_id, value, date"
+            ).in_("kpi_id", kpi_ids).in_(
+                "segment_id", segment_ids
+            ).in_("date", prev_months).eq("is_target", False)
+        )
 
-        # 前々年同期累計のKPI値を一括取得
-        two_years_ago_response = supabase.table("kpi_values").select(
-            "kpi_id, segment_id, value, date"
-        ).in_("kpi_id", kpi_ids).in_(
-            "segment_id", segment_ids
-        ).in_("date", two_years_ago_months).eq("is_target", False).execute()
-        two_years_ago_values = two_years_ago_response.data
+        # 前々年同期累計のKPI値を一括取得（1000行制限回避）
+        two_years_ago_values = _fetch_all(
+            supabase.table("kpi_values").select(
+                "kpi_id, segment_id, value, date"
+            ).in_("kpi_id", kpi_ids).in_(
+                "segment_id", segment_ids
+            ).in_("date", two_years_ago_months).eq("is_target", False)
+        )
     else:
         # 単月モード：従来通り
         # 当月のKPI値を一括取得
@@ -1401,20 +1419,22 @@ async def get_store_summary(
         two_years_fiscal_start = date(fiscal_year - 2, 9, 1)
         two_years_target_month = date(target_month.year - 2, target_month.month, 1)
 
-        # 3年分のKPI値を一括取得
-        values_response = supabase.table("kpi_values").select(
-            "segment_id, kpi_id, date, value"
-        ).in_("segment_id", segment_ids).in_(
-            "kpi_id", kpi_ids
-        ).gte("date", two_years_fiscal_start.isoformat()).lte(
-            "date", target_month.isoformat()
-        ).eq("is_target", False).execute()
+        # 3年分のKPI値を一括取得（1000行制限回避）
+        values_data = _fetch_all(
+            supabase.table("kpi_values").select(
+                "segment_id, kpi_id, date, value"
+            ).in_("segment_id", segment_ids).in_(
+                "kpi_id", kpi_ids
+            ).gte("date", two_years_fiscal_start.isoformat()).lte(
+                "date", target_month.isoformat()
+            ).eq("is_target", False)
+        )
 
         # データを年度別にマップ: {segment_id: {year_offset: {kpi_id: sum}}}
         # year_offset: 0=当年, 1=前年, 2=前々年
         cumulative_map: Dict[str, Dict[int, Dict[str, float]]] = {}
 
-        for v in values_response.data:
+        for v in values_data:
             seg_id = v["segment_id"]
             kpi_id = v["kpi_id"]
             val = float(v["value"]) if v["value"] else 0

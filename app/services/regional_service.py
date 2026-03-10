@@ -18,6 +18,20 @@ from app.services.metrics import (
 )
 
 
+def _fetch_all(query_builder) -> list:
+    """Supabaseの1000行制限を回避して全行を取得する"""
+    all_data = []
+    offset = 0
+    batch = 1000
+    while True:
+        result = query_builder.range(offset, offset + batch - 1).execute()
+        all_data.extend(result.data)
+        if len(result.data) < batch:
+            break
+        offset += batch
+    return all_data
+
+
 def _safe_yoy_rate(current: float, previous: float) -> Optional[float]:
     """
     前年比を安全に計算する（floatをDecimalに変換して計算）
@@ -291,23 +305,27 @@ async def get_regional_summary(
     sales_kpi_id = kpi_map.get("売上高")
     customers_kpi_id = kpi_map.get("客数")
 
-    # 当期データを取得
-    current_response = supabase.table("kpi_values").select(
-        "kpi_id, segment_id, date, value"
-    ).in_("segment_id", segment_ids).eq(
-        "is_target", False
-    ).gte("date", fiscal_start.isoformat()).lte(
-        "date", target_month.isoformat()
-    ).execute()
+    # 当期データを取得（1000行制限回避）
+    current_response_data = _fetch_all(
+        supabase.table("kpi_values").select(
+            "kpi_id, segment_id, date, value"
+        ).in_("segment_id", segment_ids).eq(
+            "is_target", False
+        ).gte("date", fiscal_start.isoformat()).lte(
+            "date", target_month.isoformat()
+        )
+    )
 
-    # 前年データを取得
-    prev_response = supabase.table("kpi_values").select(
-        "kpi_id, segment_id, date, value"
-    ).in_("segment_id", segment_ids).eq(
-        "is_target", False
-    ).gte("date", prev_fiscal_start.isoformat()).lte(
-        "date", prev_month.isoformat()
-    ).execute()
+    # 前年データを取得（1000行制限回避）
+    prev_response_data = _fetch_all(
+        supabase.table("kpi_values").select(
+            "kpi_id, segment_id, date, value"
+        ).in_("segment_id", segment_ids).eq(
+            "is_target", False
+        ).gte("date", prev_fiscal_start.isoformat()).lte(
+            "date", prev_month.isoformat()
+        )
+    )
 
     # 店舗別目標を取得（is_target=trueのkpi_valuesから）
     # 単月の場合は当月のみ、累計の場合は年度開始からの合計
@@ -359,7 +377,7 @@ async def get_regional_summary(
     store_customers = {}
     store_customers_prev = {}
 
-    for v in current_response.data:
+    for v in current_response_data:
         seg_id = v["segment_id"]
         kpi_id = v["kpi_id"]
         value = v["value"] or 0
@@ -369,7 +387,7 @@ async def get_regional_summary(
         elif kpi_id == customers_kpi_id:
             store_customers[seg_id] = store_customers.get(seg_id, 0) + value
 
-    for v in prev_response.data:
+    for v in prev_response_data:
         seg_id = v["segment_id"]
         kpi_id = v["kpi_id"]
         value = v["value"] or 0
