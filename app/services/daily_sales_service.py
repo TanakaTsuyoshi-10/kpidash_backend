@@ -46,12 +46,23 @@ def _get_month_range(month_str: str):
     return start, end
 
 
-def _previous_year_date(d: date) -> date:
-    """前年同日を返す（2/29→2/28にフォールバック）"""
+def _previous_year_same_weekday(d: date) -> date:
+    """前年同曜日を返す（前年の同日付に最も近い同じ曜日の日）
+
+    例: 2026/3/10(火) → 2025/3/11(火)  (3/10は月曜なので+1日)
+    """
     try:
-        return d.replace(year=d.year - 1)
+        base = d.replace(year=d.year - 1)
     except ValueError:
-        return d.replace(year=d.year - 1, day=28)
+        base = d.replace(year=d.year - 1, day=28)
+
+    diff = d.weekday() - base.weekday()
+    if diff > 3:
+        diff -= 7
+    elif diff < -3:
+        diff += 7
+
+    return base + timedelta(days=diff)
 
 
 async def _get_segments(supabase: Client, department_slug: str = "store"):
@@ -90,8 +101,8 @@ async def get_daily_sales_summary(
         DailySalesSummaryResponse相当のdict
     """
     start, end = _get_month_range(month)
-    prev_start = _previous_year_date(start)
-    prev_end = _previous_year_date(end)
+    prev_start = _previous_year_same_weekday(start) - timedelta(days=3)
+    prev_end = _previous_year_same_weekday(end) + timedelta(days=3)
 
     # セグメント取得
     segments = await _get_segments(supabase, department_slug)
@@ -193,10 +204,10 @@ async def get_daily_sales_summary(
             key = (dt_str, seg_id)
             cur = current_agg.get(key, {"sales": 0.0, "customers": 0})
 
-            # 前年同日
+            # 前年同曜日
             try:
                 cur_date = date.fromisoformat(dt_str)
-                prev_date = _previous_year_date(cur_date)
+                prev_date = _previous_year_same_weekday(cur_date)
                 prev_key = (prev_date.isoformat(), seg_id)
             except ValueError:
                 prev_key = None
@@ -424,8 +435,8 @@ async def get_daily_trend(
         DailyTrendResponse相当のdict
     """
     start, end = _get_month_range(month)
-    prev_start = _previous_year_date(start)
-    prev_end = _previous_year_date(end)
+    prev_start = _previous_year_same_weekday(start) - timedelta(days=3)
+    prev_end = _previous_year_same_weekday(end) + timedelta(days=3)
 
     # セグメント名を取得
     segment_name = None
