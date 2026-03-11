@@ -42,10 +42,16 @@ CUSTOMER_TYPE_NAMES = {
 }
 
 COMPLAINT_TYPE_NAMES = {
-    "customer_service": "接客関連",
-    "facility": "店舗設備関連",
-    "operation": "操作方法関連",
-    "product": "味・商品関連",
+    "store_service": "店舗接客",
+    "packing_error": "梱包ミス",
+    "price_discrepancy": "金額相違",
+    "phone_support": "電話対応",
+    "date_error": "日時違い",
+    "address_error": "住所違い",
+    "quantity_error": "注文数違い",
+    "delay": "遅延",
+    "contamination": "異物混入",
+    "taste": "味のクレーム",
     "other": "その他",
 }
 
@@ -153,6 +159,8 @@ async def create_complaint(
             "incident_date": data.incident_date.isoformat(),
             "department_type": data.department_type.value,
             "segment_id": data.segment_id if data.department_type.value == "store" else None,
+            "store_name": data.store_name if data.department_type.value == "store" else None,
+            "slip_number": data.slip_number if data.department_type.value == "ecommerce" else None,
             "customer_type": data.customer_type.value,
             "customer_name": data.customer_name,
             "contact_info": data.contact_info,
@@ -161,6 +169,7 @@ async def create_complaint(
             "responder_name": data.responder_name,
             "status": data.status.value,
             "response_summary": data.response_summary,
+            "handling_notes": data.handling_notes,
             "resolution_cost": float(data.resolution_cost),
             "created_by": user_id,
             "created_by_email": user_email,
@@ -215,6 +224,8 @@ async def get_complaint_by_id(supabase: Client, complaint_id: str) -> Optional[C
             department_type_name=DEPARTMENT_TYPE_NAMES.get(row["department_type"], row["department_type"]),
             segment_id=str(row["segment_id"]) if row.get("segment_id") else None,
             segment_name=segment_name,
+            store_name=row.get("store_name"),
+            slip_number=row.get("slip_number"),
             customer_type=row["customer_type"],
             customer_type_name=CUSTOMER_TYPE_NAMES.get(row["customer_type"], row["customer_type"]),
             customer_name=row.get("customer_name"),
@@ -226,6 +237,7 @@ async def get_complaint_by_id(supabase: Client, complaint_id: str) -> Optional[C
             status=row["status"],
             status_name=STATUS_NAMES.get(row["status"], row["status"]),
             response_summary=row.get("response_summary"),
+            handling_notes=row.get("handling_notes"),
             resolution_cost=_to_decimal(row.get("resolution_cost")),
             completed_at=row.get("completed_at"),
             created_by_email=row.get("created_by_email"),
@@ -325,6 +337,8 @@ async def get_complaints(
                 status=row["status"],
                 status_name=STATUS_NAMES.get(row["status"], row["status"]),
                 responder_name=row.get("responder_name"),
+                response_summary=row.get("response_summary"),
+                handling_notes=row.get("handling_notes"),
                 resolution_cost=_to_decimal(row.get("resolution_cost")),
                 created_at=row["created_at"],
             ))
@@ -370,6 +384,10 @@ async def update_complaint(
             update_data["department_type"] = data.department_type.value
         if data.segment_id is not None:
             update_data["segment_id"] = data.segment_id
+        if data.store_name is not None:
+            update_data["store_name"] = data.store_name
+        if data.slip_number is not None:
+            update_data["slip_number"] = data.slip_number
         if data.customer_type is not None:
             update_data["customer_type"] = data.customer_type.value
         if data.customer_name is not None:
@@ -386,6 +404,8 @@ async def update_complaint(
             update_data["status"] = data.status.value
         if data.response_summary is not None:
             update_data["response_summary"] = data.response_summary
+        if data.handling_notes is not None:
+            update_data["handling_notes"] = data.handling_notes
         if data.resolution_cost is not None:
             update_data["resolution_cost"] = float(data.resolution_cost)
 
@@ -460,10 +480,16 @@ async def get_monthly_summary(
             store_count=row.get("store_count", 0),
             ecommerce_count=row.get("ecommerce_count", 0),
             headquarters_count=row.get("headquarters_count", 0),
-            customer_service_count=row.get("customer_service_count", 0),
-            facility_count=row.get("facility_count", 0),
-            operation_count=row.get("operation_count", 0),
-            product_count=row.get("product_count", 0),
+            store_service_count=row.get("store_service_count", 0),
+            packing_error_count=row.get("packing_error_count", 0),
+            price_discrepancy_count=row.get("price_discrepancy_count", 0),
+            phone_support_count=row.get("phone_support_count", 0),
+            date_error_count=row.get("date_error_count", 0),
+            address_error_count=row.get("address_error_count", 0),
+            quantity_error_count=row.get("quantity_error_count", 0),
+            delay_count=row.get("delay_count", 0),
+            contamination_count=row.get("contamination_count", 0),
+            taste_count=row.get("taste_count", 0),
             other_count=row.get("other_count", 0),
             total_resolution_cost=_to_decimal(row.get("total_resolution_cost")),
         )

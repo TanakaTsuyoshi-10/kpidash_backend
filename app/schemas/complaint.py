@@ -31,11 +31,17 @@ class CustomerTypeEnum(str, Enum):
 
 class ComplaintTypeEnum(str, Enum):
     """クレーム種類"""
-    CUSTOMER_SERVICE = "customer_service"  # 接客関連
-    FACILITY = "facility"                   # 店舗設備関連
-    OPERATION = "operation"                 # 操作方法関連
-    PRODUCT = "product"                     # 味・商品関連
-    OTHER = "other"                         # その他
+    STORE_SERVICE = "store_service"           # 店舗接客
+    PACKING_ERROR = "packing_error"           # 梱包ミス
+    PRICE_DISCREPANCY = "price_discrepancy"   # 金額相違
+    PHONE_SUPPORT = "phone_support"           # 電話対応
+    DATE_ERROR = "date_error"                 # 日時違い
+    ADDRESS_ERROR = "address_error"           # 住所違い
+    QUANTITY_ERROR = "quantity_error"          # 注文数違い
+    DELAY = "delay"                           # 遅延
+    CONTAMINATION = "contamination"           # 異物混入
+    TASTE = "taste"                           # 味のクレーム
+    OTHER = "other"                           # その他
 
 
 class ComplaintStatusEnum(str, Enum):
@@ -99,6 +105,8 @@ class ComplaintCreate(BaseModel):
     # 発生部署
     department_type: DepartmentTypeEnum = Field(..., description="発生部署種類")
     segment_id: Optional[str] = Field(None, description="店舗ID（店舗の場合のみ）")
+    store_name: Optional[str] = Field(None, max_length=100, description="店舗名（店舗の場合、任意）")
+    slip_number: Optional[str] = Field(None, max_length=100, description="伝票番号（通販の場合、任意）")
 
     # 顧客情報
     customer_type: CustomerTypeEnum = Field(..., description="顧客種類")
@@ -112,7 +120,8 @@ class ComplaintCreate(BaseModel):
     # 対応情報
     responder_name: Optional[str] = Field(None, max_length=100, description="対応者名")
     status: ComplaintStatusEnum = Field(default=ComplaintStatusEnum.IN_PROGRESS, description="対応状況")
-    response_summary: Optional[str] = Field(None, description="対応の概要")
+    response_summary: Optional[str] = Field(None, description="対応結果")
+    handling_notes: Optional[str] = Field(None, description="対応中メモ")
     resolution_cost: Decimal = Field(default=Decimal("0"), ge=0, description="対応に要した金額")
 
 
@@ -123,6 +132,8 @@ class ComplaintUpdate(BaseModel):
     # 発生部署
     department_type: Optional[DepartmentTypeEnum] = Field(None, description="発生部署種類")
     segment_id: Optional[str] = Field(None, description="店舗ID（店舗の場合のみ）")
+    store_name: Optional[str] = Field(None, max_length=100, description="店舗名（店舗の場合、任意）")
+    slip_number: Optional[str] = Field(None, max_length=100, description="伝票番号（通販の場合、任意）")
 
     # 顧客情報
     customer_type: Optional[CustomerTypeEnum] = Field(None, description="顧客種類")
@@ -136,7 +147,8 @@ class ComplaintUpdate(BaseModel):
     # 対応情報
     responder_name: Optional[str] = Field(None, max_length=100, description="対応者名")
     status: Optional[ComplaintStatusEnum] = Field(None, description="対応状況")
-    response_summary: Optional[str] = Field(None, description="対応の概要")
+    response_summary: Optional[str] = Field(None, description="対応結果")
+    handling_notes: Optional[str] = Field(None, description="対応中メモ")
     resolution_cost: Optional[Decimal] = Field(None, ge=0, description="対応に要した金額")
 
 
@@ -155,6 +167,8 @@ class Complaint(BaseModel):
     department_type_name: str = Field(..., description="発生部署名")
     segment_id: Optional[str] = Field(None, description="店舗ID")
     segment_name: Optional[str] = Field(None, description="店舗名")
+    store_name: Optional[str] = Field(None, description="店舗名（手入力）")
+    slip_number: Optional[str] = Field(None, description="伝票番号")
 
     # 顧客情報
     customer_type: str = Field(..., description="顧客種類")
@@ -171,7 +185,8 @@ class Complaint(BaseModel):
     responder_name: Optional[str] = Field(None, description="対応者名")
     status: str = Field(..., description="対応状況")
     status_name: str = Field(..., description="対応状況名")
-    response_summary: Optional[str] = Field(None, description="対応の概要")
+    response_summary: Optional[str] = Field(None, description="対応結果")
+    handling_notes: Optional[str] = Field(None, description="対応中メモ")
     resolution_cost: Decimal = Field(default=Decimal("0"), description="対応に要した金額")
     completed_at: Optional[datetime] = Field(None, description="完了日時")
 
@@ -202,6 +217,8 @@ class ComplaintListItem(BaseModel):
     status: str = Field(..., description="対応状況")
     status_name: str = Field(..., description="対応状況名")
     responder_name: Optional[str] = Field(None, description="対応者名")
+    response_summary: Optional[str] = Field(None, description="対応結果")
+    handling_notes: Optional[str] = Field(None, description="対応中メモ")
     resolution_cost: Decimal = Field(default=Decimal("0"), description="対応に要した金額")
     created_at: datetime = Field(..., description="作成日時")
 
@@ -238,10 +255,16 @@ class ComplaintMonthlySummary(BaseModel):
     headquarters_count: int = Field(default=0, description="本社件数")
 
     # 種類別内訳
-    customer_service_count: int = Field(default=0, description="接客関連件数")
-    facility_count: int = Field(default=0, description="店舗設備関連件数")
-    operation_count: int = Field(default=0, description="操作方法関連件数")
-    product_count: int = Field(default=0, description="味・商品関連件数")
+    store_service_count: int = Field(default=0, description="店舗接客件数")
+    packing_error_count: int = Field(default=0, description="梱包ミス件数")
+    price_discrepancy_count: int = Field(default=0, description="金額相違件数")
+    phone_support_count: int = Field(default=0, description="電話対応件数")
+    date_error_count: int = Field(default=0, description="日時違い件数")
+    address_error_count: int = Field(default=0, description="住所違い件数")
+    quantity_error_count: int = Field(default=0, description="注文数違い件数")
+    delay_count: int = Field(default=0, description="遅延件数")
+    contamination_count: int = Field(default=0, description="異物混入件数")
+    taste_count: int = Field(default=0, description="味のクレーム件数")
     other_count: int = Field(default=0, description="その他件数")
 
     # コスト
