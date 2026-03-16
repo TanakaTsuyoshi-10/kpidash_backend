@@ -117,24 +117,37 @@ async def upload_furusato_excel(
 
         # 対象月を取得（Row1, Col4 = D1）
         month_value = ws.cell(row=1, column=4).value
-        if not month_value:
+        if month_value is None or month_value == "":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="対象月が入力されていません（Row1・Col D）"
+                detail=f"対象月が入力されていません（Row1・Col D）。シート名: {sheet_name}"
             )
 
         # 日付パース
+        target_month = None
         if isinstance(month_value, str):
-            try:
-                target_month = dt.strptime(month_value.strip(), "%Y-%m-%d").date()
-            except ValueError:
+            # 文字列の場合、複数フォーマットを試行
+            for fmt in ["%Y-%m-%d", "%Y/%m/%d", "%Y年%m月", "%Y年%m月%d日"]:
                 try:
-                    target_month = dt.strptime(month_value.strip(), "%Y/%m/%d").date()
+                    target_month = dt.strptime(month_value.strip(), fmt).date()
+                    break
                 except ValueError:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="対象月の形式が不正です"
-                    )
+                    continue
+            if target_month is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"対象月の形式が不正です（文字列: '{month_value}'）"
+                )
+        elif isinstance(month_value, (int, float)):
+            # Excelシリアル日付（例: 46054 = 2026-02-01）
+            from openpyxl.utils.datetime import from_excel
+            try:
+                target_month = from_excel(month_value).date()
+            except Exception:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"対象月の形式が不正です（数値: {month_value}）"
+                )
         elif hasattr(month_value, 'date'):
             target_month = month_value.date()
         elif isinstance(month_value, date):
@@ -142,7 +155,7 @@ async def upload_furusato_excel(
         else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="対象月の形式が不正です"
+                detail=f"対象月の形式が不正です（型: {type(month_value).__name__}, 値: {month_value}）"
             )
 
         # 月の1日に正規化
