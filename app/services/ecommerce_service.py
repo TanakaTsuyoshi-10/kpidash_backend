@@ -310,22 +310,22 @@ async def get_product_summary(
         prev_months = [get_previous_year_month(target_month).isoformat()]
         two_years_months = [date(target_month.year - 2, target_month.month, 1).isoformat()]
 
-    # 当年データ取得
+    # 当年データ取得（全チャネル合算 = channel IS NULL のみ）
     current_response = supabase.table("ecommerce_product_sales").select(
         "product_name, product_category, sales, quantity"
-    ).in_("month", current_months).execute()
+    ).in_("month", current_months).is_("channel", "null").execute()
     current_data = current_response.data
 
     # 前年データ取得
     prev_response = supabase.table("ecommerce_product_sales").select(
         "product_name, product_category, sales, quantity"
-    ).in_("month", prev_months).execute()
+    ).in_("month", prev_months).is_("channel", "null").execute()
     prev_data = prev_response.data
 
     # 前々年データ取得
     two_years_response = supabase.table("ecommerce_product_sales").select(
         "product_name, product_category, sales, quantity"
-    ).in_("month", two_years_months).execute()
+    ).in_("month", two_years_months).is_("channel", "null").execute()
     two_years_data = two_years_response.data
 
     # 商品別に集計
@@ -701,10 +701,10 @@ async def get_ecommerce_trend(
             })
 
     elif metric == "product_sales":
-        # 商品別売上推移（上位10商品）
+        # 商品別売上推移（上位10商品、全チャネル合算のみ）
         current_response = supabase.table("ecommerce_product_sales").select(
             "month, product_name, sales"
-        ).in_("month", months).execute()
+        ).in_("month", months).is_("channel", "null").execute()
 
         # 商品別合計を計算
         product_totals = {}
@@ -721,7 +721,7 @@ async def get_ecommerce_trend(
 
         prev_response = supabase.table("ecommerce_product_sales").select(
             "month, product_name, sales"
-        ).in_("month", prev_months).in_("product_name", top_names).execute()
+        ).in_("month", prev_months).in_("product_name", top_names).is_("channel", "null").execute()
 
         data = []
         for name in top_names:
@@ -1128,7 +1128,8 @@ async def import_channel_data(
 async def import_product_data(
     supabase: Client,
     month: date,
-    records: List[Dict]
+    records: List[Dict],
+    channel: Optional[str] = None
 ) -> Dict[str, int]:
     """
     商品別データをインポート
@@ -1137,6 +1138,7 @@ async def import_product_data(
         supabase: Supabaseクライアント
         month: 対象月
         records: インポートデータ
+        channel: チャネル名（Noneの場合は全チャネル合算）
 
     Returns:
         dict: 処理結果（created, updated）
@@ -1156,13 +1158,28 @@ async def import_product_data(
             "product_category": record.get("商品カテゴリ") or record.get("product_category"),
             "sales": record.get("売上高") or record.get("sales"),
             "quantity": record.get("販売数量") or record.get("quantity"),
+            "channel": channel,
         }
 
-        # Upsert
-        response = supabase.table("ecommerce_product_sales").upsert(
-            data,
-            on_conflict="month,product_name"
-        ).execute()
+        if channel:
+            # チャネル指定あり: upsert可能
+            response = supabase.table("ecommerce_product_sales").upsert(
+                data,
+                on_conflict="month,product_name,channel"
+            ).execute()
+        else:
+            # チャネルなし（全チャネル合算）: NULLはUNIQUE制約で重複許可されるため手動upsert
+            query = supabase.table("ecommerce_product_sales").select("id").eq(
+                "month", month.isoformat()
+            ).eq("product_name", product_name).is_("channel", "null")
+            existing = query.execute()
+
+            if existing.data:
+                response = supabase.table("ecommerce_product_sales").update(data).eq(
+                    "id", existing.data[0]["id"]
+                ).execute()
+            else:
+                response = supabase.table("ecommerce_product_sales").insert(data).execute()
 
         if response.data:
             updated += 1

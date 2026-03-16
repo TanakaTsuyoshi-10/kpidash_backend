@@ -339,6 +339,38 @@ async def download_excel_template(
     ws.cell(row=current_row, column=1, value="").border = thin_border
     ws.cell(row=current_row, column=2, value="").border = thin_border
     ws.cell(row=current_row, column=3, value="").border = thin_border
+    current_row += 3
+
+    # セクション5: チャネル別商品売上（チャネルごとに商品リストを表示）
+    channel_product_colors = {
+        "EC": PatternFill(start_color="3B82F6", end_color="3B82F6", fill_type="solid"),
+        "電話": PatternFill(start_color="22C55E", end_color="22C55E", fill_type="solid"),
+        "FAX": PatternFill(start_color="F59E0B", end_color="F59E0B", fill_type="solid"),
+        "店舗受付": PatternFill(start_color="8B5CF6", end_color="8B5CF6", fill_type="solid"),
+        "ふるさと納税": PatternFill(start_color="F43F5E", end_color="F43F5E", fill_type="solid"),
+    }
+    for channel in channels:
+        ws.cell(row=current_row, column=1, value=f"■ {channel} 商品別売上")
+        ws.cell(row=current_row, column=1).font = section_font
+        current_row += 1
+
+        ch_headers = ["商品名", "売上高", "販売数量"]
+        ch_fill = channel_product_colors.get(channel, header_fill)
+        for col, header in enumerate(ch_headers, 1):
+            cell = ws.cell(row=current_row, column=col, value=header)
+            cell.font = header_font_white
+            cell.fill = ch_fill
+            cell.border = thin_border
+            cell.alignment = Alignment(horizontal='center')
+        current_row += 1
+
+        for product in PRODUCT_LIST:
+            ws.cell(row=current_row, column=1, value=product).border = thin_border
+            ws.cell(row=current_row, column=2, value="").border = thin_border
+            ws.cell(row=current_row, column=3, value="").border = thin_border
+            current_row += 1
+
+        current_row += 2
 
     # 列幅調整
     ws.column_dimensions['A'].width = 25
@@ -659,7 +691,32 @@ async def upload_excel_bulk(
             result = await import_website_data(supabase, target_month, website_records)
             website_count = result.get("created", 0) + result.get("updated", 0)
 
-        total_count = channel_count + product_count + customer_count + customer_detail_count + website_count
+        # チャネル別商品売上データ取得（行45以降、各チャネル15行ずつ）
+        channel_product_count = 0
+        channel_names = ["EC", "電話", "FAX", "店舗受付", "ふるさと納税"]
+        channel_product_base = 45  # 最初のチャネルセクション開始行
+        for i, ch_name in enumerate(channel_names):
+            section_start = channel_product_base + i * 15
+            product_start = section_start + 2  # セクション見出し + ヘッダーの後
+            ch_product_records = []
+            for row_num in range(product_start, product_start + 11):
+                p_name = ws.cell(row=row_num, column=1).value
+                p_sales = parse_numeric(ws.cell(row=row_num, column=2).value)
+                p_quantity = parse_numeric(ws.cell(row=row_num, column=3).value)
+
+                if p_name and (p_sales is not None or p_quantity is not None):
+                    ch_product_records.append({
+                        "商品名": str(p_name),
+                        "商品カテゴリ": None,
+                        "売上高": p_sales,
+                        "販売数量": int(p_quantity) if p_quantity is not None else None,
+                    })
+
+            if ch_product_records:
+                result = await import_product_data(supabase, target_month, ch_product_records, channel=ch_name)
+                channel_product_count += result.get("created", 0) + result.get("updated", 0)
+
+        total_count = channel_count + product_count + customer_count + customer_detail_count + website_count + channel_product_count
         if total_count == 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
