@@ -491,8 +491,8 @@ async def upload_ecommerce_data(
     - 行8-12: チャネル別データ（EC, 電話, FAX, 店舗受付, ふるさと納税）
     - 行17-27: 商品別データ
     - 行32: 顧客別データ
-    - 行37-38: 顧客別詳細データ（新規顧客, リピーター）
-    - 行41: HPアクセスデータ
+    - 行36-37: 顧客別詳細データ（新規顧客, リピーター）
+    - 行42: HPアクセスデータ
     """,
 )
 async def upload_excel_bulk(
@@ -626,10 +626,10 @@ async def upload_excel_bulk(
             result = await import_customer_data(supabase, target_month, customer_records)
             customer_count = result.get("created", 0) + result.get("updated", 0)
 
-        # 顧客別詳細データ取得（行37-38）
+        # 顧客別詳細データ取得（行36-37）
         customer_detail_count = 0
         customer_detail_records = []
-        for row_num, ct in [(37, "new"), (38, "repeat")]:
+        for row_num, ct in [(36, "new"), (37, "repeat")]:
             ct_label = ws.cell(row=row_num, column=1).value
             ct_sales = parse_numeric(ws.cell(row=row_num, column=2).value)
             ct_quantity = parse_numeric(ws.cell(row=row_num, column=3).value)
@@ -645,10 +645,10 @@ async def upload_excel_bulk(
             result = await import_customer_detail_data(supabase, target_month, customer_detail_records)
             customer_detail_count = result.get("created", 0) + result.get("updated", 0)
 
-        # HPアクセスデータ取得（行41）
-        page_views = parse_numeric(ws.cell(row=41, column=1).value)
-        unique_visitors = parse_numeric(ws.cell(row=41, column=2).value)
-        sessions = parse_numeric(ws.cell(row=41, column=3).value)
+        # HPアクセスデータ取得（行42）
+        page_views = parse_numeric(ws.cell(row=42, column=1).value)
+        unique_visitors = parse_numeric(ws.cell(row=42, column=2).value)
+        sessions = parse_numeric(ws.cell(row=42, column=3).value)
 
         if page_views is not None or unique_visitors is not None or sessions is not None:
             website_records = [{
