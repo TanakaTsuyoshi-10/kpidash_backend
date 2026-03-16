@@ -24,6 +24,8 @@ from app.schemas.ecommerce import (
     TrendResponse,
     EcommerceUploadResponse,
     EcommerceBulkUploadResponse,
+    ChannelProductSummaryResponse,
+    CustomerDetailSummaryResponse,
 )
 from app.services.ecommerce_service import (
     get_channel_summary,
@@ -31,10 +33,13 @@ from app.services.ecommerce_service import (
     get_customer_summary,
     get_website_stats,
     get_ecommerce_trend,
+    get_channel_product_summary,
+    get_customer_detail_summary,
     import_channel_data,
     import_product_data,
     import_customer_data,
     import_website_data,
+    import_customer_detail_data,
 )
 from app.services.metrics import get_fiscal_year
 
@@ -74,6 +79,7 @@ TEMPLATES = {
             ["電話", "", ""],
             ["FAX", "", ""],
             ["店舗受付", "", ""],
+            ["ふるさと納税", "", ""],
         ],
     },
     "product": {
@@ -245,7 +251,7 @@ async def download_excel_template(
         cell.alignment = Alignment(horizontal='center')
     current_row += 1
 
-    channels = ["EC", "電話", "FAX", "店舗受付"]
+    channels = ["EC", "電話", "FAX", "店舗受付", "ふるさと納税"]
     for channel in channels:
         ws.cell(row=current_row, column=1, value=channel).border = thin_border
         ws.cell(row=current_row, column=2, value="").border = thin_border
@@ -292,7 +298,29 @@ async def download_excel_template(
 
     ws.cell(row=current_row, column=1, value="").border = thin_border
     ws.cell(row=current_row, column=2, value="").border = thin_border
-    current_row += 3
+    current_row += 2
+
+    # セクション3-2: 顧客別詳細
+    ws.cell(row=current_row, column=1, value="■ 顧客別詳細（売上・販売個数）")
+    ws.cell(row=current_row, column=1).font = section_font
+    current_row += 1
+
+    customer_detail_headers = ["顧客タイプ", "売上高", "販売個数"]
+    for col, header in enumerate(customer_detail_headers, 1):
+        cell = ws.cell(row=current_row, column=col, value=header)
+        cell.font = header_font_white
+        cell.fill = header_fill
+        cell.border = thin_border
+        cell.alignment = Alignment(horizontal='center')
+    current_row += 1
+
+    for ct_label in ["新規顧客", "リピーター"]:
+        ws.cell(row=current_row, column=1, value=ct_label).border = thin_border
+        ws.cell(row=current_row, column=2, value="").border = thin_border
+        ws.cell(row=current_row, column=3, value="").border = thin_border
+        current_row += 1
+
+    current_row += 2
 
     # セクション4: HPアクセス数
     ws.cell(row=current_row, column=1, value="■ HPアクセス数")
@@ -460,10 +488,11 @@ async def upload_ecommerce_data(
 
     テンプレートの構造:
     - 行3・列B: 対象月（YYYY-MM-DD形式）
-    - 行8-11: チャネル別データ（EC, 電話, FAX, 店舗受付）
-    - 行16-26: 商品別データ
-    - 行31: 顧客別データ
-    - 行36: HPアクセスデータ
+    - 行8-12: チャネル別データ（EC, 電話, FAX, 店舗受付, ふるさと納税）
+    - 行17-27: 商品別データ
+    - 行32: 顧客別データ
+    - 行37-38: 顧客別詳細データ（新規顧客, リピーター）
+    - 行41: HPアクセスデータ
     """,
 )
 async def upload_excel_bulk(
@@ -548,9 +577,9 @@ async def upload_excel_bulk(
                     return None
             return None
 
-        # チャネル別データ取得（行8-11）
+        # チャネル別データ取得（行8-12: 5チャネル）
         channel_records = []
-        for row_num in range(8, 12):
+        for row_num in range(8, 13):
             channel_name = ws.cell(row=row_num, column=1).value
             sales = parse_numeric(ws.cell(row=row_num, column=2).value)
             buyers = parse_numeric(ws.cell(row=row_num, column=3).value)
@@ -566,9 +595,9 @@ async def upload_excel_bulk(
             result = await import_channel_data(supabase, target_month, channel_records)
             channel_count = result.get("created", 0) + result.get("updated", 0)
 
-        # 商品別データ取得（行16-26）
+        # 商品別データ取得（行17-27）
         product_records = []
-        for row_num in range(16, 27):
+        for row_num in range(17, 28):
             product_name = ws.cell(row=row_num, column=1).value
             sales = parse_numeric(ws.cell(row=row_num, column=2).value)
             quantity = parse_numeric(ws.cell(row=row_num, column=3).value)
@@ -585,9 +614,9 @@ async def upload_excel_bulk(
             result = await import_product_data(supabase, target_month, product_records)
             product_count = result.get("created", 0) + result.get("updated", 0)
 
-        # 顧客別データ取得（行31）
-        new_customers = parse_numeric(ws.cell(row=31, column=1).value)
-        repeat_customers = parse_numeric(ws.cell(row=31, column=2).value)
+        # 顧客別データ取得（行32）
+        new_customers = parse_numeric(ws.cell(row=32, column=1).value)
+        repeat_customers = parse_numeric(ws.cell(row=32, column=2).value)
 
         if new_customers is not None or repeat_customers is not None:
             customer_records = [{
@@ -597,10 +626,29 @@ async def upload_excel_bulk(
             result = await import_customer_data(supabase, target_month, customer_records)
             customer_count = result.get("created", 0) + result.get("updated", 0)
 
-        # HPアクセスデータ取得（行36）
-        page_views = parse_numeric(ws.cell(row=36, column=1).value)
-        unique_visitors = parse_numeric(ws.cell(row=36, column=2).value)
-        sessions = parse_numeric(ws.cell(row=36, column=3).value)
+        # 顧客別詳細データ取得（行37-38）
+        customer_detail_count = 0
+        customer_detail_records = []
+        for row_num, ct in [(37, "new"), (38, "repeat")]:
+            ct_label = ws.cell(row=row_num, column=1).value
+            ct_sales = parse_numeric(ws.cell(row=row_num, column=2).value)
+            ct_quantity = parse_numeric(ws.cell(row=row_num, column=3).value)
+
+            if ct_sales is not None or ct_quantity is not None:
+                customer_detail_records.append({
+                    "customer_type": ct,
+                    "sales": ct_sales,
+                    "quantity": int(ct_quantity) if ct_quantity is not None else None,
+                })
+
+        if customer_detail_records:
+            result = await import_customer_detail_data(supabase, target_month, customer_detail_records)
+            customer_detail_count = result.get("created", 0) + result.get("updated", 0)
+
+        # HPアクセスデータ取得（行41）
+        page_views = parse_numeric(ws.cell(row=41, column=1).value)
+        unique_visitors = parse_numeric(ws.cell(row=41, column=2).value)
+        sessions = parse_numeric(ws.cell(row=41, column=3).value)
 
         if page_views is not None or unique_visitors is not None or sessions is not None:
             website_records = [{
@@ -611,7 +659,7 @@ async def upload_excel_bulk(
             result = await import_website_data(supabase, target_month, website_records)
             website_count = result.get("created", 0) + result.get("updated", 0)
 
-        total_count = channel_count + product_count + customer_count + website_count
+        total_count = channel_count + product_count + customer_count + customer_detail_count + website_count
         if total_count == 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -625,6 +673,7 @@ async def upload_excel_bulk(
             channel_records=channel_count,
             product_records=product_count,
             customer_records=customer_count,
+            customer_detail_records=customer_detail_count,
             website_records=website_count,
         )
 
@@ -649,7 +698,7 @@ async def upload_excel_bulk(
     response_model=ChannelSummaryResponse,
     summary="チャネル別実績取得",
     description="""
-    チャネル別（EC、電話、FAX、店舗受付）の売上実績を取得する。
+    チャネル別（EC、電話、FAX、店舗受付、ふるさと納税）の売上実績を取得する。
 
     - 各チャネルの売上高・購入者数・客単価
     - 前年比・前々年比（累計モード時）
@@ -810,6 +859,102 @@ async def website_stats(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"HPアクセス数の取得に失敗しました: {str(e)}"
+        )
+
+
+# =============================================================================
+# チャネル別商品売上エンドポイント
+# =============================================================================
+
+@router.get(
+    "/channel/{channel}/products",
+    response_model=ChannelProductSummaryResponse,
+    summary="チャネル別商品売上取得",
+    description="""
+    指定チャネルの商品別売上を取得する。
+
+    - 商品名・売上高・販売数量
+    - 前年比
+
+    ## パラメータ
+    - channel: チャネル名（EC, 電話, FAX, 店舗受付, ふるさと納税）
+    - month: 対象月（YYYY-MM-DD形式）
+    - period_type: 期間タイプ（monthly/cumulative）
+    """,
+)
+async def channel_products(
+    channel: str,
+    month: date = Query(..., description="対象月（YYYY-MM-DD形式）"),
+    period_type: str = Query("monthly", description="期間タイプ（monthly/cumulative）"),
+    current_user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase_admin),
+) -> ChannelProductSummaryResponse:
+    """チャネル別商品売上を取得"""
+    from app.services.ecommerce_service import CHANNELS
+    if channel not in CHANNELS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"不正なチャネル: {channel}。有効な値: {', '.join(CHANNELS)}"
+        )
+    if period_type not in ["monthly", "cumulative"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="period_typeは'monthly'または'cumulative'を指定してください"
+        )
+
+    try:
+        result = await get_channel_product_summary(supabase, channel, month, period_type)
+        return ChannelProductSummaryResponse(**result)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"チャネル別商品売上の取得に失敗しました: {str(e)}"
+        )
+
+
+# =============================================================================
+# 顧客別詳細エンドポイント
+# =============================================================================
+
+@router.get(
+    "/customer-detail/{customer_type}",
+    response_model=CustomerDetailSummaryResponse,
+    summary="顧客別詳細取得",
+    description="""
+    顧客タイプ別の詳細データ（売上・販売個数・顧客単価）を取得する。
+
+    ## パラメータ
+    - customer_type: 顧客タイプ（new/repeat）
+    - month: 対象月（YYYY-MM-DD形式）
+    - period_type: 期間タイプ（monthly/cumulative）
+    """,
+)
+async def customer_detail(
+    customer_type: str,
+    month: date = Query(..., description="対象月（YYYY-MM-DD形式）"),
+    period_type: str = Query("monthly", description="期間タイプ（monthly/cumulative）"),
+    current_user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase_admin),
+) -> CustomerDetailSummaryResponse:
+    """顧客別詳細を取得"""
+    if customer_type not in ["new", "repeat"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="customer_typeは'new'または'repeat'を指定してください"
+        )
+    if period_type not in ["monthly", "cumulative"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="period_typeは'monthly'または'cumulative'を指定してください"
+        )
+
+    try:
+        result = await get_customer_detail_summary(supabase, customer_type, month, period_type)
+        return CustomerDetailSummaryResponse(**result)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"顧客別詳細の取得に失敗しました: {str(e)}"
         )
 
 

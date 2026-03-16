@@ -24,7 +24,7 @@ from app.services.metrics import (
 # 定数定義
 # =============================================================================
 
-CHANNELS = ["EC", "電話", "FAX", "店舗受付"]
+CHANNELS = ["EC", "電話", "FAX", "店舗受付", "ふるさと納税"]
 
 
 # =============================================================================
@@ -807,6 +807,268 @@ async def get_ecommerce_trend(
 # =============================================================================
 # データインポート
 # =============================================================================
+
+# =============================================================================
+# チャネル別商品売上取得
+# =============================================================================
+
+@cached(prefix="ecommerce", ttl=1800)
+async def get_channel_product_summary(
+    supabase: Client,
+    channel: str,
+    target_month: date,
+    period_type: str = "monthly",
+    limit: int = 20
+) -> Dict[str, Any]:
+    """
+    チャネル別の商品売上を取得
+
+    Args:
+        supabase: Supabaseクライアント
+        channel: チャネル名
+        target_month: 対象月
+        period_type: 期間タイプ（monthly/cumulative）
+        limit: 取得件数
+
+    Returns:
+        dict: チャネル別商品売上データ
+    """
+    target_month = normalize_to_month_start(target_month)
+    fiscal_year = get_fiscal_year(target_month)
+    is_cumulative = period_type == "cumulative"
+
+    if is_cumulative:
+        current_months = get_cumulative_months(target_month)
+        prev_months = get_previous_year_months(current_months)
+    else:
+        current_months = [target_month.isoformat()]
+        prev_months = [get_previous_year_month(target_month).isoformat()]
+
+    # 当年データ取得
+    current_response = supabase.table("ecommerce_product_sales").select(
+        "product_name, sales, quantity"
+    ).in_("month", current_months).eq("channel", channel).execute()
+
+    # 前年データ取得
+    prev_response = supabase.table("ecommerce_product_sales").select(
+        "product_name, sales, quantity"
+    ).in_("month", prev_months).eq("channel", channel).execute()
+
+    # 商品別に集計
+    def aggregate_by_product(data: List[Dict]) -> Dict[str, Dict]:
+        result = {}
+        for row in data:
+            name = row["product_name"]
+            if name not in result:
+                result[name] = {"sales": Decimal("0"), "quantity": 0}
+            if row.get("sales"):
+                result[name]["sales"] += Decimal(str(row["sales"]))
+            if row.get("quantity"):
+                result[name]["quantity"] += row["quantity"]
+        return result
+
+    current_agg = aggregate_by_product(current_response.data)
+    prev_agg = aggregate_by_product(prev_response.data)
+
+    # 売上高順でソート
+    sorted_products = sorted(
+        current_agg.items(),
+        key=lambda x: x[1]["sales"],
+        reverse=True
+    )[:limit]
+
+    products = []
+    for name, data in sorted_products:
+        sales = data["sales"]
+        sales_prev = prev_agg.get(name, {}).get("sales", Decimal("0"))
+        quantity = data["quantity"]
+        quantity_prev = prev_agg.get(name, {}).get("quantity", 0)
+
+        products.append({
+            "product_name": name,
+            "sales": float(sales) if sales else None,
+            "sales_previous_year": float(sales_prev) if sales_prev else None,
+            "sales_yoy": calculate_yoy_rate(sales, sales_prev) if sales and sales_prev else None,
+            "quantity": quantity if quantity else None,
+            "quantity_previous_year": quantity_prev if quantity_prev else None,
+            "quantity_yoy": calculate_yoy_rate(
+                Decimal(quantity), Decimal(quantity_prev)
+            ) if quantity and quantity_prev else None,
+        })
+
+    return {
+        "channel": channel,
+        "period": target_month.isoformat(),
+        "period_type": period_type,
+        "fiscal_year": fiscal_year if is_cumulative else None,
+        "products": products,
+    }
+
+
+# =============================================================================
+# 顧客別詳細取得
+# =============================================================================
+
+@cached(prefix="ecommerce", ttl=1800)
+async def get_customer_detail_summary(
+    supabase: Client,
+    customer_type: str,
+    target_month: date,
+    period_type: str = "monthly"
+) -> Dict[str, Any]:
+    """
+    顧客タイプ別詳細を取得
+
+    Args:
+        supabase: Supabaseクライアント
+        customer_type: 顧客タイプ（new/repeat）
+        target_month: 対象月
+        period_type: 期間タイプ（monthly/cumulative）
+
+    Returns:
+        dict: 顧客別詳細データ
+    """
+    target_month = normalize_to_month_start(target_month)
+    fiscal_year = get_fiscal_year(target_month)
+    is_cumulative = period_type == "cumulative"
+
+    if is_cumulative:
+        current_months = get_cumulative_months(target_month)
+        prev_months = get_previous_year_months(current_months)
+    else:
+        current_months = [target_month.isoformat()]
+        prev_months = [get_previous_year_month(target_month).isoformat()]
+
+    # 当年データ取得
+    current_response = supabase.table("ecommerce_customer_detail_stats").select(
+        "sales, quantity"
+    ).in_("month", current_months).eq("customer_type", customer_type).execute()
+
+    # 前年データ取得
+    prev_response = supabase.table("ecommerce_customer_detail_stats").select(
+        "sales, quantity"
+    ).in_("month", prev_months).eq("customer_type", customer_type).execute()
+
+    # 集計
+    def sum_detail(data: List[Dict]) -> Dict:
+        total_sales = Decimal("0")
+        total_quantity = 0
+        has_sales = False
+        has_quantity = False
+        for row in data:
+            if row.get("sales") is not None:
+                total_sales += Decimal(str(row["sales"]))
+                has_sales = True
+            if row.get("quantity") is not None:
+                total_quantity += row["quantity"]
+                has_quantity = True
+        return {
+            "sales": total_sales if has_sales else None,
+            "quantity": total_quantity if has_quantity else None,
+        }
+
+    current = sum_detail(current_response.data)
+    prev = sum_detail(prev_response.data)
+
+    # 顧客単価計算
+    unit_price = None
+    unit_price_prev = None
+
+    # 顧客数は ecommerce_customer_stats から取得
+    customer_key = "new_customers" if customer_type == "new" else "repeat_customers"
+
+    current_count_response = supabase.table("ecommerce_customer_stats").select(
+        customer_key
+    ).in_("month", current_months).execute()
+    current_count_data = [r for r in current_count_response.data if not r.get("is_target")]
+
+    prev_count_response = supabase.table("ecommerce_customer_stats").select(
+        customer_key
+    ).in_("month", prev_months).execute()
+    prev_count_data = [r for r in prev_count_response.data if not r.get("is_target")]
+
+    total_count = sum(r.get(customer_key, 0) or 0 for r in current_count_data)
+    prev_total_count = sum(r.get(customer_key, 0) or 0 for r in prev_count_data)
+
+    if current["sales"] is not None and total_count and total_count > 0:
+        unit_price = round(float(current["sales"]) / total_count, 0)
+    if prev["sales"] is not None and prev_total_count and prev_total_count > 0:
+        unit_price_prev = round(float(prev["sales"]) / prev_total_count, 0)
+
+    result_data = {
+        "sales": float(current["sales"]) if current["sales"] is not None else None,
+        "sales_previous_year": float(prev["sales"]) if prev["sales"] is not None else None,
+        "sales_yoy": calculate_yoy_rate(current["sales"], prev["sales"]) if current["sales"] and prev["sales"] else None,
+        "quantity": current["quantity"],
+        "quantity_previous_year": prev["quantity"],
+        "quantity_yoy": calculate_yoy_rate(
+            Decimal(current["quantity"]), Decimal(prev["quantity"])
+        ) if current["quantity"] and prev["quantity"] else None,
+        "unit_price": unit_price,
+        "unit_price_previous_year": unit_price_prev,
+        "unit_price_yoy": calculate_yoy_rate(
+            Decimal(str(unit_price)), Decimal(str(unit_price_prev))
+        ) if unit_price and unit_price_prev else None,
+    }
+
+    return {
+        "customer_type": customer_type,
+        "period": target_month.isoformat(),
+        "period_type": period_type,
+        "fiscal_year": fiscal_year if is_cumulative else None,
+        "data": result_data,
+    }
+
+
+# =============================================================================
+# データインポート
+# =============================================================================
+
+async def import_customer_detail_data(
+    supabase: Client,
+    month: date,
+    records: List[Dict]
+) -> Dict[str, int]:
+    """
+    顧客別詳細データをインポート
+
+    Args:
+        supabase: Supabaseクライアント
+        month: 対象月
+        records: インポートデータ（customer_type, sales, quantityを含む）
+
+    Returns:
+        dict: 処理結果（created, updated）
+    """
+    month = normalize_to_month_start(month)
+    updated = 0
+
+    for record in records:
+        customer_type = record.get("customer_type")
+        if not customer_type or customer_type not in ("new", "repeat"):
+            continue
+
+        data = {
+            "month": month.isoformat(),
+            "customer_type": customer_type,
+            "sales": record.get("sales"),
+            "quantity": record.get("quantity"),
+        }
+
+        # Upsert
+        response = supabase.table("ecommerce_customer_detail_stats").upsert(
+            data,
+            on_conflict="month,customer_type"
+        ).execute()
+
+        if response.data:
+            updated += 1
+
+    if updated > 0:
+        cache.clear_prefix("ecommerce")
+
+    return {"created": 0, "updated": updated}
+
 
 async def import_channel_data(
     supabase: Client,

@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 class ChannelData(BaseModel):
     """チャネル別実績データ"""
-    channel: str = Field(..., description="チャネル名: EC, 電話, FAX, 店舗受付")
+    channel: str = Field(..., description="チャネル名: EC, 電話, FAX, 店舗受付, ふるさと納税")
     sales: Optional[float] = Field(None, description="売上高")
     sales_target: Optional[float] = Field(None, description="売上高目標")
     sales_achievement_rate: Optional[float] = Field(None, description="売上高達成率（%）")
@@ -186,6 +186,56 @@ class TrendResponse(BaseModel):
 
 
 # =============================================================================
+# チャネル別商品売上スキーマ
+# =============================================================================
+
+class ChannelProductData(BaseModel):
+    """チャネル別商品データ"""
+    product_name: str = Field(..., description="商品名")
+    sales: Optional[float] = Field(None, description="売上高")
+    sales_previous_year: Optional[float] = Field(None, description="前年売上高")
+    sales_yoy: Optional[float] = Field(None, description="売上高前年比（%）")
+    quantity: Optional[int] = Field(None, description="販売数量")
+    quantity_previous_year: Optional[int] = Field(None, description="前年販売数量")
+    quantity_yoy: Optional[float] = Field(None, description="販売数量前年比（%）")
+
+
+class ChannelProductSummaryResponse(BaseModel):
+    """チャネル別商品売上レスポンス"""
+    channel: str = Field(..., description="チャネル名")
+    period: str = Field(..., description="対象期間（YYYY-MM-DD）")
+    period_type: str = Field(default="monthly", description="期間タイプ")
+    fiscal_year: Optional[int] = Field(None, description="会計年度")
+    products: List[ChannelProductData] = Field(..., description="商品別データ")
+
+
+# =============================================================================
+# 顧客別詳細スキーマ
+# =============================================================================
+
+class CustomerDetailData(BaseModel):
+    """顧客別詳細データ"""
+    sales: Optional[float] = Field(None, description="売上高")
+    sales_previous_year: Optional[float] = Field(None, description="前年売上高")
+    sales_yoy: Optional[float] = Field(None, description="売上高前年比（%）")
+    quantity: Optional[int] = Field(None, description="販売個数")
+    quantity_previous_year: Optional[int] = Field(None, description="前年販売個数")
+    quantity_yoy: Optional[float] = Field(None, description="販売個数前年比（%）")
+    unit_price: Optional[float] = Field(None, description="顧客単価")
+    unit_price_previous_year: Optional[float] = Field(None, description="前年顧客単価")
+    unit_price_yoy: Optional[float] = Field(None, description="顧客単価前年比（%）")
+
+
+class CustomerDetailSummaryResponse(BaseModel):
+    """顧客別詳細レスポンス"""
+    customer_type: str = Field(..., description="顧客タイプ（new/repeat）")
+    period: str = Field(..., description="対象期間（YYYY-MM-DD）")
+    period_type: str = Field(default="monthly", description="期間タイプ")
+    fiscal_year: Optional[int] = Field(None, description="会計年度")
+    data: CustomerDetailData = Field(..., description="顧客詳細データ")
+
+
+# =============================================================================
 # アップロード関連スキーマ
 # =============================================================================
 
@@ -208,6 +258,7 @@ class EcommerceBulkUploadResponse(BaseModel):
     channel_records: int = Field(0, description="チャネル別レコード数")
     product_records: int = Field(0, description="商品別レコード数")
     customer_records: int = Field(0, description="顧客別レコード数")
+    customer_detail_records: int = Field(0, description="顧客別詳細レコード数")
     website_records: int = Field(0, description="HPアクセスレコード数")
 
 
