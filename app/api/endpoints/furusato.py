@@ -180,6 +180,10 @@ async def upload_furusato_excel(
             """指定行・列の値を取得（デフォルトはCol J = 10）"""
             return parse_numeric(ws.cell(row=row, column=col).value)
 
+        def get_weekly(row):
+            """第1〜5週の値を取得（Col E=5, F=6, G=7, H=8, I=9）"""
+            return [parse_numeric(ws.cell(row=row, column=c).value) for c in range(5, 10)]
+
         def get_comment(row, col=12):
             """指定行・列のコメントを取得（Col L = 12）"""
             val = ws.cell(row=row, column=col).value
@@ -215,6 +219,54 @@ async def upload_furusato_excel(
             "comment_complaint": get_comment(39),
             "comment_review": get_comment(45),
         }
+
+        # 週次データ（Col E〜I: 第1〜5週）
+        def build_weekly(mapping):
+            """週次データJSONBを構築。全指標がNoneなら None を返す"""
+            result = {}
+            has_data = False
+            for key, row in mapping.items():
+                values = get_weekly(row)
+                result[key] = values
+                if any(v is not None for v in values):
+                    has_data = True
+            return result if has_data else None
+
+        weekly_sales = build_weekly({
+            "orders": 5,
+            "sales": 8,
+            "orders_kyushu": 11,
+            "orders_chugoku_shikoku": 12,
+            "orders_kansai": 13,
+            "orders_kanto": 14,
+            "orders_other": 15,
+        })
+        if weekly_sales is not None:
+            data["weekly_sales"] = weekly_sales
+
+        weekly_repeat = build_weekly({
+            "new_customers": 29,
+            "ec_site_buyers": 31,
+            "repeat_buyers": 32,
+            "repeat_single_month": 33,
+            "repeat_multi_month": 34,
+        })
+        if weekly_repeat is not None:
+            data["weekly_repeat"] = weekly_repeat
+
+        weekly_complaint = build_weekly({
+            "reshipping_count": 39,
+            "complaint_count": 40,
+        })
+        if weekly_complaint is not None:
+            data["weekly_complaint"] = weekly_complaint
+
+        weekly_review = build_weekly({
+            "positive_reviews": 45,
+            "negative_reviews": 46,
+        })
+        if weekly_review is not None:
+            data["weekly_review"] = weekly_review
 
         # Noneのキーを除外
         data = {k: v for k, v in data.items() if v is not None}

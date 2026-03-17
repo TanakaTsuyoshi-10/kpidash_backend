@@ -127,6 +127,7 @@ async def _get_monthly_summary(
             "orders_other": _safe_int(record.get("orders_other")),
             "cumulative_orders": None,
             "cumulative_sales": None,
+            "weekly": record.get("weekly_sales"),
         },
         "repeat": {
             "new_customers": _safe_int(record.get("new_customers")),
@@ -135,14 +136,17 @@ async def _get_monthly_summary(
             "repeat_buyers": _safe_int(record.get("repeat_buyers")),
             "repeat_single_month": _safe_int(record.get("repeat_single_month")),
             "repeat_multi_month": _safe_int(record.get("repeat_multi_month")),
+            "weekly": record.get("weekly_repeat"),
         },
         "complaint": {
             "reshipping_count": _safe_int(record.get("reshipping_count")),
             "complaint_count": _safe_int(record.get("complaint_count")),
+            "weekly": record.get("weekly_complaint"),
         },
         "review": {
             "positive_reviews": _safe_int(record.get("positive_reviews")),
             "negative_reviews": _safe_int(record.get("negative_reviews")),
+            "weekly": record.get("weekly_review"),
         },
         "comments": {
             "sales": record.get("comment_sales"),
@@ -191,6 +195,7 @@ async def _get_cumulative_summary(
             "orders_other": _sum_field(records, "orders_other"),
             "cumulative_orders": _sum_field(records, "orders"),
             "cumulative_sales": _sum_field_float(records, "sales"),
+            "weekly": current_record.get("weekly_sales"),
         },
         "repeat": {
             "new_customers": _safe_int(current_record.get("new_customers")),
@@ -199,14 +204,17 @@ async def _get_cumulative_summary(
             "repeat_buyers": _safe_int(current_record.get("repeat_buyers")),
             "repeat_single_month": _safe_int(current_record.get("repeat_single_month")),
             "repeat_multi_month": _safe_int(current_record.get("repeat_multi_month")),
+            "weekly": current_record.get("weekly_repeat"),
         },
         "complaint": {
             "reshipping_count": _sum_field(records, "reshipping_count"),
             "complaint_count": _sum_field(records, "complaint_count"),
+            "weekly": current_record.get("weekly_complaint"),
         },
         "review": {
             "positive_reviews": _sum_field(records, "positive_reviews"),
             "negative_reviews": _sum_field(records, "negative_reviews"),
+            "weekly": current_record.get("weekly_review"),
         },
         "comments": {
             "sales": current_record.get("comment_sales"),

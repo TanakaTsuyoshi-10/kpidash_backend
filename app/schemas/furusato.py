@@ -26,6 +26,7 @@ class FurusatoSalesData(BaseModel):
     orders_other: Optional[int] = Field(None, description="エリア: その他")
     cumulative_orders: Optional[int] = Field(None, description="累計注文数")
     cumulative_sales: Optional[float] = Field(None, description="累計売上高")
+    weekly: Optional[dict] = Field(None, description="週次データ（第1〜5週）")
 
 
 # =============================================================================
@@ -40,6 +41,7 @@ class FurusatoRepeatData(BaseModel):
     repeat_buyers: Optional[int] = Field(None, description="ふるさと納税複数回購入経験者")
     repeat_single_month: Optional[int] = Field(None, description="単月で複数回注文")
     repeat_multi_month: Optional[int] = Field(None, description="複数月で注文経験有")
+    weekly: Optional[dict] = Field(None, description="週次データ（第1〜5週）")
 
 
 # =============================================================================
@@ -50,6 +52,7 @@ class FurusatoComplaintData(BaseModel):
     """返品・苦情データ"""
     reshipping_count: Optional[int] = Field(None, description="再送数")
     complaint_count: Optional[int] = Field(None, description="苦情数")
+    weekly: Optional[dict] = Field(None, description="週次データ（第1〜5週）")
 
 
 # =============================================================================
@@ -60,6 +63,7 @@ class FurusatoReviewData(BaseModel):
     """口コミデータ"""
     positive_reviews: Optional[int] = Field(None, description="ポジティブ情報")
     negative_reviews: Optional[int] = Field(None, description="ネガティブ情報")
+    weekly: Optional[dict] = Field(None, description="週次データ（第1〜5週）")
 
 
 # =============================================================================
