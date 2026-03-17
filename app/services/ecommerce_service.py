@@ -808,6 +808,15 @@ async def get_ecommerce_trend(
 # データインポート
 # =============================================================================
 
+
+def _get(record: Dict, key_ja: str, key_en: str):
+    """レコードから日本語キー優先で値を取得する（0をfalsyとして消失させない）"""
+    val = record.get(key_ja)
+    if val is not None:
+        return val
+    return record.get(key_en)
+
+
 # =============================================================================
 # チャネル別商品売上取得
 # =============================================================================
@@ -1098,8 +1107,8 @@ async def import_channel_data(
         data = {
             "month": month.isoformat(),
             "channel": channel,
-            "sales": record.get("売上高") or record.get("sales"),
-            "buyers": record.get("購入者数") or record.get("buyers"),
+            "sales": _get(record, "売上高", "sales"),
+            "buyers": _get(record, "購入者数", "buyers"),
             "is_target": False,  # 実績データとして登録
         }
 
@@ -1155,9 +1164,9 @@ async def import_product_data(
         data = {
             "month": month.isoformat(),
             "product_name": product_name,
-            "product_category": record.get("商品カテゴリ") or record.get("product_category"),
-            "sales": record.get("売上高") or record.get("sales"),
-            "quantity": record.get("販売数量") or record.get("quantity"),
+            "product_category": _get(record, "商品カテゴリ", "product_category"),
+            "sales": _get(record, "売上高", "sales"),
+            "quantity": _get(record, "販売数量", "quantity"),
             "channel": channel,
         }
 
@@ -1212,8 +1221,8 @@ async def import_customer_data(
     # 顧客データは月に1レコード
     record = records[0] if records else {}
 
-    new_customers = record.get("新規顧客数") or record.get("new_customers") or 0
-    repeat_customers = record.get("リピーター数") or record.get("repeat_customers") or 0
+    new_customers = _get(record, "新規顧客数", "new_customers") or 0
+    repeat_customers = _get(record, "リピーター数", "repeat_customers") or 0
     total_customers = new_customers + repeat_customers
 
     data = {
@@ -1263,9 +1272,9 @@ async def import_website_data(
 
     data = {
         "month": month.isoformat(),
-        "page_views": record.get("ページビュー数") or record.get("page_views"),
-        "unique_visitors": record.get("ユニークビジター数") or record.get("unique_visitors"),
-        "sessions": record.get("セッション数") or record.get("sessions"),
+        "page_views": _get(record, "ページビュー数", "page_views"),
+        "unique_visitors": _get(record, "ユニークビジター数", "unique_visitors"),
+        "sessions": _get(record, "セッション数", "sessions"),
     }
 
     # 既存のデータをチェックして更新または挿入
