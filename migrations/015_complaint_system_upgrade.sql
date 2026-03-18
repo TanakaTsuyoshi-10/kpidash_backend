@@ -47,7 +47,8 @@ ALTER TABLE complaints ADD COLUMN IF NOT EXISTS handling_notes TEXT;
 -- =============================================================================
 
 DROP VIEW IF EXISTS view_complaints_monthly_summary;
-CREATE VIEW view_complaints_monthly_summary AS
+CREATE VIEW view_complaints_monthly_summary
+WITH (security_invoker = true) AS
 SELECT
     DATE_TRUNC('month', incident_date)::DATE as month,
     COUNT(*) as total_count,
