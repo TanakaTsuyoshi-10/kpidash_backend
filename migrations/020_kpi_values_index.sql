@@ -1,6 +1,21 @@
--- kpi_valuesテーブルへの複合インデックス追加
--- 店舗実績クエリがsegment_id IN, kpi_id IN, date =, is_target = falseで検索する際の高速化
--- 特に累計モードでの効果が大きい（-200〜500ms）
+-- kpi_values テーブルに UNIQUE 制約を追加
+-- upsert (on_conflict="segment_id,kpi_id,date,is_target") が正しく動作するために必要
+--
+-- 注意: 重複データが既に存在する場合、先にクリーンアップが必要
+-- 以下のクエリで重複を確認:
+--   SELECT segment_id, kpi_id, date, is_target, COUNT(*)
+--   FROM kpi_values
+--   GROUP BY segment_id, kpi_id, date, is_target
+--   HAVING COUNT(*) > 1;
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_kpi_values_segment_kpi_date_target
+-- Step 1: 重複データを削除（最新のレコードを残す）
+DELETE FROM kpi_values
+WHERE id NOT IN (
+    SELECT MAX(id)
+    FROM kpi_values
+    GROUP BY segment_id, kpi_id, date, is_target
+);
+
+-- Step 2: UNIQUE インデックスを作成
+CREATE UNIQUE INDEX IF NOT EXISTS idx_kpi_values_unique
     ON kpi_values(segment_id, kpi_id, date, is_target);
