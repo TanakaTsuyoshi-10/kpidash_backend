@@ -7,6 +7,7 @@ Supabase Authとの連携を含む。
 from typing import Optional, List
 from supabase import Client
 
+from app.services.cache_service import cache
 from app.schemas.user import (
     UserProfileCreate,
     UserProfileUpdate,
@@ -102,6 +103,9 @@ async def update_user_page_permissions(
             rows = [{"user_id": user_id, "page_key": key} for key in page_keys]
             supabase.table("user_page_permissions").insert(rows).execute()
 
+        # プロファイルキャッシュを無効化（allowed_pagesが変わるため）
+        cache.delete(f"user:profile:{user_id}")
+
         return UserOperationResult(
             success=True,
             message="ページ権限を更新しました",
@@ -129,6 +133,11 @@ async def get_current_user_profile(
     Returns:
         CurrentUserResponse: ユーザー情報
     """
+    cache_key = f"user:profile:{user_id}"
+    cached_result = cache.get(cache_key)
+    if cached_result is not None:
+        return cached_result
+
     try:
         response = supabase.table("user_profiles").select(
             "id, email, display_name, role"
@@ -144,7 +153,7 @@ async def get_current_user_profile(
             else:
                 allowed_pages = await get_user_page_permissions(supabase, user_id)
 
-            return CurrentUserResponse(
+            result = CurrentUserResponse(
                 id=user["id"],
                 email=user["email"],
                 display_name=user.get("display_name"),
@@ -152,6 +161,8 @@ async def get_current_user_profile(
                 is_admin=user_role == "admin",
                 allowed_pages=allowed_pages,
             )
+            cache.set(cache_key, result, ttl=300)
+            return result
         return None
     except Exception:
         return None
@@ -372,6 +383,9 @@ async def update_user(
                 user_id=None,
             )
 
+        # プロファイルキャッシュを無効化
+        cache.delete(f"user:profile:{user_id}")
+
         return UserOperationResult(
             success=True,
             message="ユーザー情報を更新しました",
@@ -417,6 +431,9 @@ async def update_own_profile(
                 message="プロファイルが見つかりません",
                 user_id=None,
             )
+
+        # プロファイルキャッシュを無効化
+        cache.delete(f"user:profile:{user_id}")
 
         return UserOperationResult(
             success=True,

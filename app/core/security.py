@@ -2,11 +2,11 @@
 セキュリティモジュール
 
 Supabase AuthのJWTトークン検証機能を提供する。
-Supabase SDKを使用してトークンを検証する。
+JWT_SECRETを使ったローカル検証でリモート通信を排除。
 """
 from typing import Optional, Dict, Any
 
-from supabase import create_client
+from jose import jwt, JWTError
 
 from app.core.config import settings
 
@@ -26,10 +26,11 @@ class TokenValidationError(Exception):
 
 def decode_token(token: str) -> Dict[str, Any]:
     """
-    JWTトークンをSupabase SDKで検証する
+    JWTトークンをローカルで検証する
 
-    Supabase Authが発行したJWTトークンを検証し、
-    ユーザー情報を返す。
+    JWT_SECRETを使ってSupabase Authが発行したJWTトークンを
+    ローカルでデコード・検証し、ユーザー情報を返す。
+    リモートAPI通信が不要なため高速（<1ms）。
 
     Args:
         token: Authorizationヘッダーから取得したJWTトークン
@@ -41,34 +42,24 @@ def decode_token(token: str) -> Dict[str, Any]:
         TokenValidationError: トークンが無効、期限切れ、または検証失敗時
     """
     try:
-        # Supabaseクライアントを作成
-        supabase = create_client(
-            settings.SUPABASE_URL,
-            settings.SUPABASE_ANON_KEY
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALGORITHM],
+            audience="authenticated",
         )
-
-        # トークンからユーザー情報を取得
-        user_response = supabase.auth.get_user(token)
-
-        if not user_response or not user_response.user:
-            raise TokenValidationError(
-                "無効なアクセストークンです",
-                status_code=401
-            )
-
-        user = user_response.user
-
-        # ペイロード形式で返す
         return {
-            "sub": user.id,
-            "email": user.email,
-            "app_metadata": user.app_metadata or {},
-            "user_metadata": user.user_metadata or {},
-            "role": user.role or "authenticated",
+            "sub": payload.get("sub"),
+            "email": payload.get("email"),
+            "app_metadata": payload.get("app_metadata", {}),
+            "user_metadata": payload.get("user_metadata", {}),
+            "role": payload.get("role", "authenticated"),
         }
-
-    except TokenValidationError:
-        raise
+    except JWTError as e:
+        raise TokenValidationError(
+            f"無効なアクセストークンです: {str(e)}",
+            status_code=401
+        )
     except Exception as e:
         raise TokenValidationError(
             f"無効なアクセストークンです: {str(e)}",
