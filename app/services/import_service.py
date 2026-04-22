@@ -171,6 +171,9 @@ async def import_store_kpi(
                 ).execute()
             result["imported"] = len(kpi_records)
             cache.clear_prefix("dashboard")
+            cache.clear_prefix("kpi")
+            cache.clear_prefix("finance")
+            cache.clear_prefix("store_pl")
 
         except Exception as e:
             result["errors"].append(f"KPIバルクインポートに失敗: {str(e)}")
@@ -362,6 +365,9 @@ async def import_product_kpi(
                 ).execute()
             result["imported"] = len(kpi_records)
             cache.clear_prefix("dashboard")
+            cache.clear_prefix("kpi")
+            cache.clear_prefix("finance")
+            cache.clear_prefix("store_pl")
 
         except Exception as e:
             result["errors"].append(f"KPIバルクインポートに失敗: {str(e)}")
