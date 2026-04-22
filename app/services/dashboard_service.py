@@ -36,7 +36,7 @@ from app.services.cache_service import cached, cache
 # メイン関数
 # =============================================================================
 
-@cached(prefix="dashboard", ttl=1800)  # 30分キャッシュ
+@cached(prefix="dashboard", ttl=120)  # 2分キャッシュ
 async def get_dashboard_data(
     supabase: Client,
     period_type: str = "monthly",

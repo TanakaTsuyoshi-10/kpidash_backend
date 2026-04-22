@@ -365,7 +365,7 @@ async def get_financial_summary_with_details(
 # 財務分析（前年比較込み）
 # =============================================================================
 
-@cached(prefix="finance", ttl=1800)
+@cached(prefix="finance", ttl=120)
 async def get_financial_analysis(
     supabase: Client,
     period: date,
@@ -568,7 +568,7 @@ async def _fetch_store_pl_prev(supabase: Client, prev_period_strings: List[str],
     ).eq("is_target", False).in_("segment_id", segment_ids).execute()
 
 
-@cached(prefix="store_pl", ttl=1800)
+@cached(prefix="store_pl", ttl=120)
 async def get_store_pl_list(
     supabase: Client,
     period: date,

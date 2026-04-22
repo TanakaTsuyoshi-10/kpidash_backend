@@ -75,7 +75,7 @@ def _fetch_all(query_builder) -> list:
 # 部門サマリー取得
 # =============================================================================
 
-@cached(prefix="kpi", ttl=600)
+@cached(prefix="kpi", ttl=120)
 async def get_department_summary(
     supabase: Client,
     department_id: str,
@@ -226,7 +226,7 @@ async def get_department_summary(
 # 店舗別詳細取得
 # =============================================================================
 
-@cached(prefix="kpi", ttl=600)
+@cached(prefix="kpi", ttl=120)
 async def get_segment_detail(
     supabase: Client,
     segment_id: str,
@@ -344,7 +344,7 @@ async def get_segment_detail(
 # 時系列データ取得
 # =============================================================================
 
-@cached(prefix="kpi", ttl=600)
+@cached(prefix="kpi", ttl=120)
 async def get_comparison_data(
     supabase: Client,
     department_id: str,
@@ -463,7 +463,7 @@ async def get_comparison_data(
 # ランキング取得
 # =============================================================================
 
-@cached(prefix="kpi", ttl=600)
+@cached(prefix="kpi", ttl=120)
 async def get_ranking(
     supabase: Client,
     department_id: str,
@@ -653,7 +653,7 @@ async def get_alerts(
 # 商品マトリックス取得（一括取得用）
 # =============================================================================
 
-@cached(prefix="kpi", ttl=600)
+@cached(prefix="kpi", ttl=120)
 async def get_product_matrix(
     supabase: Client,
     department_id: str,
@@ -937,7 +937,7 @@ async def get_product_matrix(
 # 商品別月次推移取得（グラフ用）
 # =============================================================================
 
-@cached(prefix="kpi", ttl=600)
+@cached(prefix="kpi", ttl=120)
 async def get_product_trend(
     supabase: Client,
     department_id: str,
@@ -1117,7 +1117,7 @@ async def get_product_trend(
 # 店舗詳細取得
 # =============================================================================
 
-@cached(prefix="kpi", ttl=600)
+@cached(prefix="kpi", ttl=120)
 async def get_store_detail(
     supabase: Client,
     segment_id: str,
@@ -1339,7 +1339,7 @@ async def get_store_detail(
 # 店舗別売上集計取得
 # =============================================================================
 
-@cached(prefix="kpi", ttl=600)
+@cached(prefix="kpi", ttl=120)
 async def get_store_summary(
     supabase: Client,
     department_id: str,
@@ -1726,7 +1726,7 @@ async def get_available_months(
 # 店舗別推移取得
 # =============================================================================
 
-@cached(prefix="kpi", ttl=600)
+@cached(prefix="kpi", ttl=120)
 async def get_store_trend_all(
     supabase: Client,
     department_id: str,
@@ -1818,7 +1818,7 @@ async def get_store_trend_all(
     }
 
 
-@cached(prefix="kpi", ttl=600)
+@cached(prefix="kpi", ttl=120)
 async def get_store_trend_single(
     supabase: Client,
     segment_id: str,

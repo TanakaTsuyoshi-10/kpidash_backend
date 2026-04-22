@@ -19,7 +19,7 @@ class CacheService:
     def __init__(self):
         self._cache: Dict[str, Dict[str, Any]] = {}
         # デフォルトTTL（秒）
-        self.default_ttl = 300  # 5分
+        self.default_ttl = 120  # 2分
 
     def _generate_key(self, prefix: str, *args, **kwargs) -> str:
         """キャッシュキーを生成"""
@@ -139,19 +139,12 @@ def cached(prefix: str, ttl: int = 300):
             # キャッシュキー生成（関数名込みプレフィックス）
             key = cache._generate_key(func_prefix, *args, **kwargs)
 
-            # Stale-While-Revalidate: staleデータも取得対象にする
-            cached_value = cache.get(key, allow_stale=True)
-
-            if cached_value is not None and not cache.is_stale(key):
-                # Freshデータ: そのまま返す
-                return cached_value
-
+            # Freshデータのみ返す（期限切れは再取得）
+            cached_value = cache.get(key)
             if cached_value is not None:
-                # Staleデータ: 即座に返しつつバックグラウンドで更新
-                asyncio.create_task(_refresh_in_background(key, func, args, kwargs, ttl))
                 return cached_value
 
-            # キャッシュなし: 同期的に取得して返す
+            # キャッシュなしまたは期限切れ: 再取得して返す
             result = await func(*args, **kwargs)
             cache.set(key, result, ttl)
             return result

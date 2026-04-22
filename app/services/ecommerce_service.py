@@ -112,7 +112,7 @@ async def _fetch_channel_sales_target(supabase: Client, months: List[str]):
     ).in_("month", months).eq("is_target", True).execute()
 
 
-@cached(prefix="ecommerce", ttl=1800)
+@cached(prefix="ecommerce", ttl=120)
 async def get_channel_summary(
     supabase: Client,
     target_month: date,
@@ -277,7 +277,7 @@ async def get_channel_summary(
 # 商品別実績取得
 # =============================================================================
 
-@cached(prefix="ecommerce", ttl=1800)
+@cached(prefix="ecommerce", ttl=120)
 async def get_product_summary(
     supabase: Client,
     target_month: date,
@@ -402,7 +402,7 @@ async def get_product_summary(
 # 顧客別実績取得
 # =============================================================================
 
-@cached(prefix="ecommerce", ttl=1800)
+@cached(prefix="ecommerce", ttl=120)
 async def get_customer_summary(
     supabase: Client,
     target_month: date,
@@ -533,7 +533,7 @@ async def get_customer_summary(
 # HPアクセス数取得
 # =============================================================================
 
-@cached(prefix="ecommerce", ttl=1800)
+@cached(prefix="ecommerce", ttl=120)
 async def get_website_stats(
     supabase: Client,
     target_month: date,
@@ -821,7 +821,7 @@ def _get(record: Dict, key_ja: str, key_en: str):
 # チャネル別商品売上取得
 # =============================================================================
 
-@cached(prefix="ecommerce", ttl=1800)
+@cached(prefix="ecommerce", ttl=120)
 async def get_channel_product_summary(
     supabase: Client,
     channel: str,
@@ -918,7 +918,7 @@ async def get_channel_product_summary(
 # 顧客別詳細取得
 # =============================================================================
 
-@cached(prefix="ecommerce", ttl=1800)
+@cached(prefix="ecommerce", ttl=120)
 async def get_customer_detail_summary(
     supabase: Client,
     customer_type: str,
