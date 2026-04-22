@@ -108,6 +108,7 @@ async def get_complaints(
         page_size=page_size,
         status=status_filter.value if status_filter else None,
         department_type=department_type.value if department_type else None,
+        segment_id=segment_id,
         complaint_type=complaint_type.value if complaint_type else None,
         start_date=start_date,
         end_date=end_date,

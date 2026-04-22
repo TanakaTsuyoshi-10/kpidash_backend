@@ -18,28 +18,37 @@ from app.core.security import (
 from app.schemas.kpi import User
 
 
+_supabase_client: Optional[Client] = None
+_supabase_admin: Optional[Client] = None
+
+
 def get_supabase_client() -> Client:
     """
-    Supabaseクライアントを取得する（匿名キー使用）
+    Supabaseクライアントを取得する（匿名キー使用・シングルトン）
 
     匿名キー（SUPABASE_ANON_KEY）を使用したクライアントを返す。
     RLS（Row Level Security）が適用される。
+    インスタンスはモジュールレベルでキャッシュされ再利用される。
 
     Returns:
         Client: Supabaseクライアントインスタンス
     """
-    return create_client(
-        settings.SUPABASE_URL,
-        settings.SUPABASE_ANON_KEY
-    )
+    global _supabase_client
+    if _supabase_client is None:
+        _supabase_client = create_client(
+            settings.SUPABASE_URL,
+            settings.SUPABASE_ANON_KEY
+        )
+    return _supabase_client
 
 
 def get_supabase_admin() -> Client:
     """
-    Supabase管理者クライアントを取得する（サービスロールキー使用）
+    Supabase管理者クライアントを取得する（サービスロールキー使用・シングルトン）
 
     サービスロールキー（SUPABASE_SERVICE_ROLE_KEY）を使用したクライアントを返す。
     RLSをバイパスするため、管理者操作やバッチ処理に使用する。
+    インスタンスはモジュールレベルでキャッシュされ再利用される。
 
     ⚠️ 注意: このクライアントはRLSをバイパスするため、
     適切な権限チェックを行った上で使用すること。
@@ -47,10 +56,13 @@ def get_supabase_admin() -> Client:
     Returns:
         Client: Supabase管理者クライアントインスタンス
     """
-    return create_client(
-        settings.SUPABASE_URL,
-        settings.SUPABASE_SERVICE_ROLE_KEY
-    )
+    global _supabase_admin
+    if _supabase_admin is None:
+        _supabase_admin = create_client(
+            settings.SUPABASE_URL,
+            settings.SUPABASE_SERVICE_ROLE_KEY
+        )
+    return _supabase_admin
 
 
 async def get_current_user(

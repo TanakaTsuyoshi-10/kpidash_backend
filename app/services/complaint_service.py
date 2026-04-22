@@ -259,6 +259,7 @@ async def get_complaints(
     page_size: int = 20,
     status: Optional[str] = None,
     department_type: Optional[str] = None,
+    segment_id: Optional[str] = None,
     complaint_type: Optional[str] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
@@ -290,6 +291,8 @@ async def get_complaints(
             query = query.eq("status", status)
         if department_type:
             query = query.eq("department_type", department_type)
+        if segment_id:
+            query = query.eq("segment_id", segment_id)
         if complaint_type:
             query = query.eq("complaint_type", complaint_type)
         if start_date:

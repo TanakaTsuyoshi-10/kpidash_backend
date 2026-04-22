@@ -38,8 +38,13 @@ class CacheService:
         # prefix: を先頭に付けることで clear_prefix が正しく機能する
         return f"{prefix}:{hash_part}"
 
-    def get(self, key: str) -> Optional[Any]:
-        """キャッシュからデータを取得"""
+    def get(self, key: str, allow_stale: bool = False) -> Optional[Any]:
+        """キャッシュからデータを取得
+
+        Args:
+            key: キャッシュキー
+            allow_stale: Trueの場合、TTL切れでも値を返す（SWRパターン用）
+        """
         if key not in self._cache:
             return None
 
@@ -47,10 +52,18 @@ class CacheService:
 
         # TTLチェック
         if time.time() > entry['expires_at']:
+            if allow_stale:
+                return entry['value']
             del self._cache[key]
             return None
 
         return entry['value']
+
+    def is_stale(self, key: str) -> bool:
+        """キャッシュエントリがTTL切れかどうかを返す"""
+        if key not in self._cache:
+            return True
+        return time.time() > self._cache[key]['expires_at']
 
     def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
         """キャッシュにデータを保存"""
@@ -113,22 +126,34 @@ def cached(prefix: str, ttl: int = 300):
         # 関数名を含めたプレフィックスで異なる関数のキー衝突を防ぐ
         func_prefix = f"{prefix}:{func.__name__}"
 
+        async def _refresh_in_background(key: str, func, args, kwargs, ttl: int):
+            """バックグラウンドでキャッシュを更新する"""
+            try:
+                result = await func(*args, **kwargs)
+                cache.set(key, result, ttl)
+            except Exception:
+                pass  # バックグラウンド更新失敗時はstaleデータを継続使用
+
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
             # キャッシュキー生成（関数名込みプレフィックス）
             key = cache._generate_key(func_prefix, *args, **kwargs)
 
-            # キャッシュチェック
-            cached_value = cache.get(key)
-            if cached_value is not None:
+            # Stale-While-Revalidate: staleデータも取得対象にする
+            cached_value = cache.get(key, allow_stale=True)
+
+            if cached_value is not None and not cache.is_stale(key):
+                # Freshデータ: そのまま返す
                 return cached_value
 
-            # 関数実行
+            if cached_value is not None:
+                # Staleデータ: 即座に返しつつバックグラウンドで更新
+                asyncio.create_task(_refresh_in_background(key, func, args, kwargs, ttl))
+                return cached_value
+
+            # キャッシュなし: 同期的に取得して返す
             result = await func(*args, **kwargs)
-
-            # キャッシュ保存
             cache.set(key, result, ttl)
-
             return result
 
         @wraps(func)

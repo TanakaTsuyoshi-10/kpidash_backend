@@ -5,7 +5,8 @@ KPI管理システムのバックエンドAPIを提供する。
 Supabase認証と連携し、部門別のKPIデータ管理機能を提供する。
 """
 import os
-from datetime import datetime
+import asyncio
+from datetime import datetime, date
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -192,6 +193,40 @@ async def health_check() -> HealthResponse:
 # イベントハンドラ
 # =============================================================================
 
+async def warm_cache():
+    """
+    起動時にダッシュボードと店舗実績の主要データをプリフェッチし、
+    コールドスタート時の初回ユーザー待ち時間を削減する。
+    """
+    try:
+        from app.api.deps import get_supabase_admin
+        from app.services.kpi_service import get_store_summary, get_department_summary
+        from app.services.metrics import get_fiscal_year, normalize_to_month_start
+
+        supabase = get_supabase_admin()
+
+        # 部門一覧を取得
+        departments = supabase.table("departments").select("id, slug").execute()
+
+        # 前月を対象にキャッシュを温める
+        today = date.today()
+        if today.month == 1:
+            target_month = date(today.year - 1, 12, 1)
+        else:
+            target_month = date(today.year, today.month - 1, 1)
+
+        for dept in departments.data:
+            try:
+                await get_store_summary(supabase, dept["id"], target_month, "monthly")
+                await get_department_summary(supabase, dept["id"], target_month)
+            except Exception as e:
+                print(f"   キャッシュウォーミングスキップ ({dept['slug']}): {e}")
+
+        print(f"   キャッシュウォーミング: 完了")
+    except Exception as e:
+        print(f"   キャッシュウォーミング: エラー ({e})")
+
+
 @app.on_event("startup")
 async def startup_event():
     """
@@ -199,6 +234,7 @@ async def startup_event():
 
     - 設定の読み込み確認
     - DB接続の初期化（必要に応じて）
+    - キャッシュウォーミング（バックグラウンド）
     """
     print(f"🚀 {settings.API_TITLE} v{settings.API_VERSION} が起動しました")
     print(f"   環境: {settings.APP_ENV}")
@@ -209,6 +245,9 @@ async def startup_event():
     print(f"   監査ログ: {'有効' if security_config.ENABLE_AUDIT_LOG else '無効'}")
     print(f"   Gzip圧縮: 有効（1KB以上）")
     print(f"   キャッシュ: 有効（インメモリ、TTL: 5分）")
+
+    # バックグラウンドでキャッシュを温める（起動を遅延させない）
+    asyncio.create_task(warm_cache())
 
 
 @app.on_event("shutdown")

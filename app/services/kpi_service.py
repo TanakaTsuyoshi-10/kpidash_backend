@@ -21,18 +21,47 @@ from app.services.metrics import (
     calculate_customer_unit_price,
     get_alert_level,
 )
-from app.services.cache_service import cached
+from app.services.cache_service import cached, cache
 
 
 # 商品グループとして扱うカテゴリ
 PRODUCT_GROUP_CATEGORY = "商品グループ"
 
 
+def _get_store_metadata(supabase: Client, department_id: str):
+    """
+    店舗実績に必要なメタデータ（部門slug・セグメント・KPI定義）を取得する。
+    1時間TTLでキャッシュし、変動しないマスタデータのDB問い合わせを削減。
+    """
+    key = f"meta:store_metadata:{department_id}"
+    cached_value = cache.get(key)
+    if cached_value is not None:
+        return cached_value
+
+    dept_response = supabase.table("departments").select(
+        "slug"
+    ).eq("id", department_id).single().execute()
+
+    segments_response = supabase.table("segments").select(
+        "id, code, name"
+    ).eq("department_id", department_id).order("code").execute()
+
+    kpi_response = supabase.table("kpi_definitions").select(
+        "id, name"
+    ).eq("department_id", department_id).in_(
+        "name", ["売上高", "客数"]
+    ).execute()
+
+    result = (dept_response.data, segments_response.data, kpi_response.data)
+    cache.set(key, result, ttl=3600)
+    return result
+
+
 def _fetch_all(query_builder) -> list:
     """Supabaseの1000行制限を回避して全行を取得する"""
     all_data = []
     offset = 0
-    batch = 1000
+    batch = 5000
     while True:
         result = query_builder.range(offset, offset + batch - 1).execute()
         all_data.extend(result.data)
@@ -1335,17 +1364,9 @@ async def get_store_summary(
     target_month = normalize_to_month_start(target_month)
     fiscal_year = get_fiscal_year(target_month)
 
-    # 部門情報を取得
-    dept_response = supabase.table("departments").select(
-        "slug"
-    ).eq("id", department_id).single().execute()
-    department_slug = dept_response.data["slug"]
-
-    # セグメント（店舗）を取得
-    segments_response = supabase.table("segments").select(
-        "id, code, name"
-    ).eq("department_id", department_id).order("code").execute()
-    segments = segments_response.data
+    # メタデータをキャッシュから取得（1時間TTL、初回以降はDB問い合わせなし）
+    dept_data, segments, kpi_defs = _get_store_metadata(supabase, department_id)
+    department_slug = dept_data["slug"]
 
     # 空の結果を返すための共通構造
     empty_totals = {
@@ -1378,13 +1399,7 @@ async def get_store_summary(
 
     segment_ids = [seg["id"] for seg in segments]
 
-    # KPI定義（売上高、客数）を取得
-    kpi_response = supabase.table("kpi_definitions").select(
-        "id, name"
-    ).eq("department_id", department_id).in_(
-        "name", ["売上高", "客数"]
-    ).execute()
-    kpi_map = {kpi["name"]: kpi["id"] for kpi in kpi_response.data}
+    kpi_map = {kpi["name"]: kpi["id"] for kpi in kpi_defs}
 
     sales_kpi_id = kpi_map.get("売上高")
     customers_kpi_id = kpi_map.get("客数")
