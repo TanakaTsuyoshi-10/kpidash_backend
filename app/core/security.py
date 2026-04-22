@@ -2,13 +2,17 @@
 セキュリティモジュール
 
 Supabase AuthのJWTトークン検証機能を提供する。
-JWT_SECRETを使ったローカル検証でリモート通信を排除。
+JWT_SECRETを使ったローカル検証を優先し、失敗時はリモート検証にフォールバック。
 """
+import logging
 from typing import Optional, Dict, Any
 
 from jose import jwt, JWTError
+from supabase import create_client
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class TokenValidationError(Exception):
@@ -24,13 +28,48 @@ class TokenValidationError(Exception):
         super().__init__(self.message)
 
 
+def _decode_token_local(token: str) -> Dict[str, Any]:
+    """JWTトークンをローカルで検証する（高速、<1ms）"""
+    payload = jwt.decode(
+        token,
+        settings.JWT_SECRET,
+        algorithms=[settings.JWT_ALGORITHM],
+        audience="authenticated",
+    )
+    return {
+        "sub": payload.get("sub"),
+        "email": payload.get("email"),
+        "app_metadata": payload.get("app_metadata", {}),
+        "user_metadata": payload.get("user_metadata", {}),
+        "role": payload.get("role", "authenticated"),
+    }
+
+
+def _decode_token_remote(token: str) -> Dict[str, Any]:
+    """Supabase Auth APIでトークンを検証する（フォールバック用）"""
+    supabase = create_client(
+        settings.SUPABASE_URL,
+        settings.SUPABASE_ANON_KEY
+    )
+    user_response = supabase.auth.get_user(token)
+    if not user_response or not user_response.user:
+        raise TokenValidationError("無効なアクセストークンです", status_code=401)
+    user = user_response.user
+    return {
+        "sub": user.id,
+        "email": user.email,
+        "app_metadata": user.app_metadata or {},
+        "user_metadata": user.user_metadata or {},
+        "role": user.role or "authenticated",
+    }
+
+
 def decode_token(token: str) -> Dict[str, Any]:
     """
-    JWTトークンをローカルで検証する
+    JWTトークンを検証する
 
-    JWT_SECRETを使ってSupabase Authが発行したJWTトークンを
-    ローカルでデコード・検証し、ユーザー情報を返す。
-    リモートAPI通信が不要なため高速（<1ms）。
+    ローカルJWT検証を優先し、失敗時はSupabase Auth APIにフォールバック。
+    JWT_SECRETが正しく設定されていればローカル検証のみで完結する。
 
     Args:
         token: Authorizationヘッダーから取得したJWTトークン
@@ -41,25 +80,17 @@ def decode_token(token: str) -> Dict[str, Any]:
     Raises:
         TokenValidationError: トークンが無効、期限切れ、または検証失敗時
     """
+    # ローカルJWT検証を試行
     try:
-        payload = jwt.decode(
-            token,
-            settings.JWT_SECRET,
-            algorithms=[settings.JWT_ALGORITHM],
-            audience="authenticated",
-        )
-        return {
-            "sub": payload.get("sub"),
-            "email": payload.get("email"),
-            "app_metadata": payload.get("app_metadata", {}),
-            "user_metadata": payload.get("user_metadata", {}),
-            "role": payload.get("role", "authenticated"),
-        }
-    except JWTError as e:
-        raise TokenValidationError(
-            f"無効なアクセストークンです: {str(e)}",
-            status_code=401
-        )
+        return _decode_token_local(token)
+    except (JWTError, Exception) as local_err:
+        logger.warning("ローカルJWT検証失敗（リモートにフォールバック）: %s", local_err)
+
+    # フォールバック: Supabase Auth APIで検証
+    try:
+        return _decode_token_remote(token)
+    except TokenValidationError:
+        raise
     except Exception as e:
         raise TokenValidationError(
             f"無効なアクセストークンです: {str(e)}",
