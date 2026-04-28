@@ -25,10 +25,37 @@ import chardet
 # =============================================================================
 
 def detect_encoding(file_content: bytes) -> str:
-    """chardetでエンコーディングを検出し、cp932系はcp932に統一する"""
+    """chardetでエンコーディングを検出し、cp932系はcp932に統一する。
+
+    日本語POSデータのため、まずcp932でデコードを試み、
+    ヘッダー行の既知キーワードが含まれていれば確定する。
+    chardetは大きなShift-JISファイルで誤検出することがあるため、
+    chardet結果は補助的に使用する。
+    """
+    # cp932で正しくデコードできるか先に試す（POSデータはほぼcp932）
+    try:
+        text = file_content.decode("cp932")
+        if "販売日時" in text or "レシート" in text or "販売日" in text:
+            return "cp932"
+    except (UnicodeDecodeError, LookupError):
+        pass
+
+    # UTF-8を試す
+    try:
+        text = file_content.decode("utf-8")
+        if "販売日時" in text or "レシート" in text or "販売日" in text:
+            return "utf-8"
+    except (UnicodeDecodeError, LookupError):
+        pass
+
+    # chardetにフォールバック
     result = chardet.detect(file_content)
     encoding = (result.get("encoding") or "cp932").lower()
+    confidence = result.get("confidence", 0)
     if encoding in ("shift_jis", "shift-jis", "sjis", "windows-31j"):
+        return "cp932"
+    # 信頼度が低い場合はcp932をデフォルトとする
+    if confidence < 0.5:
         return "cp932"
     return encoding
 
