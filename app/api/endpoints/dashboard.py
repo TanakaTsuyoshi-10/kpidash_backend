@@ -16,12 +16,22 @@ from app.schemas.dashboard import (
     ChartDataPoint,
     AlertItem,
 )
+from app.schemas.insights import (
+    HighlightResponse,
+    InsightsResponse,
+    DataFreshnessResponse,
+)
 from app.services.dashboard_service import (
     get_dashboard_data,
     get_company_summary as service_get_company_summary,
     get_cash_flow as service_get_cash_flow,
     get_chart_data as service_get_chart_data,
     get_alerts as service_get_alerts,
+)
+from app.services.insight_generator import (
+    generate_highlights,
+    generate_insights,
+    get_data_freshness as service_get_data_freshness,
 )
 from app.services.period_utils import (
     get_period_range,
@@ -330,4 +340,73 @@ async def get_dashboard_alerts(
         raise HTTPException(
             status_code=500,
             detail=f"アラートの取得に失敗しました: {str(e)}"
+        )
+
+
+# =============================================================================
+# 今日のハイライト
+# =============================================================================
+
+@router.get(
+    "/highlights",
+    response_model=HighlightResponse,
+    summary="今日のハイライト取得",
+    description="毎日変わるテキスト洞察を3〜4件取得する。店舗売上・EC・客数客単価分解など。",
+)
+async def get_highlights(
+    supabase: Client = Depends(get_supabase_client),
+) -> HighlightResponse:
+    """今日のハイライトを取得する"""
+    try:
+        return await generate_highlights(supabase=supabase)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"ハイライトの取得に失敗しました: {str(e)}"
+        )
+
+
+# =============================================================================
+# 注目ポイント（インサイト）
+# =============================================================================
+
+@router.get(
+    "/insights",
+    response_model=InsightsResponse,
+    summary="注目ポイント取得",
+    description="好調/注意/要対応に分類されたインサイトリストを取得する。",
+)
+async def get_insights(
+    supabase: Client = Depends(get_supabase_client),
+) -> InsightsResponse:
+    """注目ポイントを取得する"""
+    try:
+        return await generate_insights(supabase=supabase)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"インサイトの取得に失敗しました: {str(e)}"
+        )
+
+
+# =============================================================================
+# データ鮮度
+# =============================================================================
+
+@router.get(
+    "/data-freshness",
+    response_model=DataFreshnessResponse,
+    summary="データ鮮度取得",
+    description="財務・店舗・通販データの最新更新日時を取得する。",
+)
+async def get_freshness(
+    supabase: Client = Depends(get_supabase_client),
+) -> DataFreshnessResponse:
+    """データ鮮度を取得する"""
+    try:
+        return await service_get_data_freshness(supabase=supabase)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"データ鮮度の取得に失敗しました: {str(e)}"
         )
