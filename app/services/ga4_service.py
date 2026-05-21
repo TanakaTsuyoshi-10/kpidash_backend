@@ -184,9 +184,10 @@ def _run_report(client: Any, property_id: str) -> Dict[str, Any]:
     property_name = f"properties/{property_id}"
 
     # --- 指標（sessions / bounceRate）の日別比較 ---
+    # date ディメンションを付けると複数 date_range とのクロス積でノイズ行が出るため、
+    # ディメンションなし（dateRange のみ自動付与）で各範囲1行ずつ取得する。
     metric_request = RunReportRequest(
         property=property_name,
-        dimensions=[Dimension(name="date")],
         metrics=[Metric(name="sessions"), Metric(name="bounceRate")],
         date_ranges=[
             DateRange(start_date=yesterday.isoformat(), end_date=yesterday.isoformat(), name="current"),
@@ -199,12 +200,11 @@ def _run_report(client: Any, property_id: str) -> Dict[str, Any]:
     sessions_by_range: Dict[str, float] = {}
     bounce_by_range: Dict[str, float] = {}
     for row in metric_resp.rows:
-        # date_range はディメンション値の最後に付与される
+        # 複数 date_range 指定時、dateRange 名がディメンション値として付与される
         range_name = row.dimension_values[-1].value if row.dimension_values else "current"
         sess = float(row.metric_values[0].value or 0)
         bounce = float(row.metric_values[1].value or 0) * 100  # bounceRateは0〜1の比率
-        sessions_by_range[range_name] = sessions_by_range.get(range_name, 0.0) + sess
-        # 離脱率は平均扱い（1日1行想定のため上書きで十分）
+        sessions_by_range[range_name] = sess
         bounce_by_range[range_name] = bounce
 
     sessions = _comparison(

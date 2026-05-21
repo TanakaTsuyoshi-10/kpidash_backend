@@ -33,7 +33,6 @@ JST = ZoneInfo("Asia/Tokyo")
 MAX_CHANNELS = 20            # 走査するチャンネル数の上限
 HISTORY_LIMIT = 20           # 1チャンネルあたりの取得件数
 MAX_POSTS_PER_CHANNEL = 8    # 1チャンネルから採用する投稿数の上限
-MAX_TEXT_LENGTH = 120        # 本文抜粋の最大文字数
 
 # 投稿サブタイプのうち通常メッセージとして扱わないもの
 SKIP_SUBTYPES = {
@@ -208,7 +207,7 @@ async def _build_post(
     return {
         "channel": f"#{channel_name}" if channel_name else "#unknown",
         "author": author,
-        "text": _truncate(text),
+        "text": _clean_text(text),
         "ts": ts,
         "time_label": _format_time_label(ts, today),
         "permalink": permalink,
@@ -301,12 +300,9 @@ def _format_time_label(ts: str, today: date) -> str:
     return f"昨 {time_str}"
 
 
-def _truncate(text: str) -> str:
-    """本文を1行に整形し、最大長で切り詰める。"""
-    one_line = " ".join(text.split())
-    if len(one_line) > MAX_TEXT_LENGTH:
-        return one_line[:MAX_TEXT_LENGTH].rstrip() + "…"
-    return one_line
+def _clean_text(text: str) -> str:
+    """本文の前後の空白のみ除去する（全文を表示するため切り詰めない。改行は保持）。"""
+    return text.strip()
 
 
 # =============================================================================
