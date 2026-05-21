@@ -259,14 +259,17 @@ async def get_regional_summary(
     target_month = normalize_to_month_start(target_month)
     fiscal_year = get_fiscal_year(target_month)
     prev_month = get_previous_year_month(target_month)
+    two_years_month = get_previous_year_month(prev_month)
 
     # 累計の場合は年度開始から
     if period_type == "cumulative":
         fiscal_start, _ = get_fiscal_year_range(fiscal_year)
         prev_fiscal_start, _ = get_fiscal_year_range(fiscal_year - 1)
+        two_years_fiscal_start, _ = get_fiscal_year_range(fiscal_year - 2)
     else:
         fiscal_start = target_month
         prev_fiscal_start = prev_month
+        two_years_fiscal_start = two_years_month
 
     # 地区一覧を取得
     regions = await get_regions(supabase)
@@ -327,6 +330,17 @@ async def get_regional_summary(
         )
     )
 
+    # 前々年データを取得（1000行制限回避）
+    two_years_response_data = _fetch_all(
+        supabase.table("kpi_values").select(
+            "kpi_id, segment_id, date, value"
+        ).in_("segment_id", segment_ids).eq(
+            "is_target", False
+        ).gte("date", two_years_fiscal_start.isoformat()).lte(
+            "date", two_years_month.isoformat()
+        )
+    )
+
     # 店舗別目標を取得（is_target=trueのkpi_valuesから）
     # 単月の場合は当月のみ、累計の場合は年度開始からの合計
     store_targets_response = supabase.table("kpi_values").select(
@@ -374,6 +388,7 @@ async def get_regional_summary(
     # 店舗別・KPI別に集計
     store_sales = {}  # {segment_id: total_sales}
     store_sales_prev = {}
+    store_sales_two_years = {}
     store_customers = {}
     store_customers_prev = {}
 
@@ -397,6 +412,14 @@ async def get_regional_summary(
         elif kpi_id == customers_kpi_id:
             store_customers_prev[seg_id] = store_customers_prev.get(seg_id, 0) + value
 
+    for v in two_years_response_data:
+        seg_id = v["segment_id"]
+        kpi_id = v["kpi_id"]
+        value = v["value"] or 0
+
+        if kpi_id == sales_kpi_id:
+            store_sales_two_years[seg_id] = store_sales_two_years.get(seg_id, 0) + value
+
     # 地区別に集計
     regional_data = {}
     for region in regions:
@@ -406,6 +429,7 @@ async def get_regional_summary(
             "stores": [],
             "total_sales": 0,
             "total_sales_previous_year": 0,
+            "total_sales_two_years_ago": 0,
             "total_customers": 0,
             "total_customers_previous_year": 0,
         }
@@ -425,6 +449,7 @@ async def get_regional_summary(
 
         sales = store_sales.get(seg_id, 0)
         sales_prev = store_sales_prev.get(seg_id, 0)
+        sales_two_years = store_sales_two_years.get(seg_id, 0)
         customers = store_customers.get(seg_id, 0)
         customers_prev = store_customers_prev.get(seg_id, 0)
 
@@ -436,6 +461,7 @@ async def get_regional_summary(
             "segment_name": seg["name"],
             "sales": sales if sales > 0 else None,
             "sales_previous_year": sales_prev if sales_prev > 0 else None,
+            "sales_two_years_ago": sales_two_years if sales_two_years > 0 else None,
             "sales_yoy_rate": _safe_yoy_rate(sales, sales_prev),
             "customers": int(customers) if customers > 0 else None,
             "customers_previous_year": int(customers_prev) if customers_prev > 0 else None,
@@ -447,6 +473,7 @@ async def get_regional_summary(
         regional_data[region_id]["stores"].append(store_data)
         regional_data[region_id]["total_sales"] += sales
         regional_data[region_id]["total_sales_previous_year"] += sales_prev
+        regional_data[region_id]["total_sales_two_years_ago"] += sales_two_years
         regional_data[region_id]["total_customers"] += customers
         regional_data[region_id]["total_customers_previous_year"] += customers_prev
 
@@ -454,6 +481,7 @@ async def get_regional_summary(
     result_regions = []
     grand_total_sales = 0
     grand_total_sales_prev = 0
+    grand_total_sales_two_years = 0
     grand_total_customers = 0
     grand_total_customers_prev = 0
 
@@ -466,6 +494,7 @@ async def get_regional_summary(
 
         total_sales = rd["total_sales"]
         total_sales_prev = rd["total_sales_previous_year"]
+        total_sales_two_years = rd["total_sales_two_years_ago"]
         total_customers = rd["total_customers"]
         total_customers_prev = rd["total_customers_previous_year"]
 
@@ -490,6 +519,7 @@ async def get_regional_summary(
             "region_name": region["name"],
             "total_sales": total_sales if total_sales > 0 else None,
             "total_sales_previous_year": total_sales_prev if total_sales_prev > 0 else None,
+            "total_sales_two_years_ago": total_sales_two_years if total_sales_two_years > 0 else None,
             "sales_yoy_rate": sales_yoy_rate,
             "sales_yoy_diff": sales_yoy_diff,
             "target_sales": target_sales,
@@ -507,6 +537,7 @@ async def get_regional_summary(
 
         grand_total_sales += total_sales
         grand_total_sales_prev += total_sales_prev
+        grand_total_sales_two_years += total_sales_two_years
         grand_total_customers += total_customers
         grand_total_customers_prev += total_customers_prev
 
@@ -521,6 +552,7 @@ async def get_regional_summary(
             "region_name": "全体合計",
             "total_sales": grand_total_sales,
             "total_sales_previous_year": grand_total_sales_prev if grand_total_sales_prev > 0 else None,
+            "total_sales_two_years_ago": grand_total_sales_two_years if grand_total_sales_two_years > 0 else None,
             "sales_yoy_rate": _safe_yoy_rate(grand_total_sales, grand_total_sales_prev),
             "sales_yoy_diff": grand_total_sales - grand_total_sales_prev if grand_total_sales_prev else None,
             "target_sales": None,

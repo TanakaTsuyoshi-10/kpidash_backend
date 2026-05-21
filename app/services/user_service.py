@@ -147,8 +147,8 @@ async def get_current_user_profile(
             user = response.data[0]
             user_role = user["role"]
 
-            # 管理者は全ページを許可、一般ユーザーはDBから取得
-            if user_role == "admin":
+            # 管理者・役員は全ページを許可、一般ユーザーはDBから取得
+            if user_role in ("admin", "executive"):
                 allowed_pages = ALL_PAGE_KEYS
             else:
                 allowed_pages = await get_user_page_permissions(supabase, user_id)

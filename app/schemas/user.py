@@ -18,6 +18,7 @@ import re
 class UserRole(str, Enum):
     """ユーザー権限"""
     ADMIN = "admin"
+    EXECUTIVE = "executive"
     USER = "user"
 
 
@@ -31,6 +32,8 @@ class PageKey(str, Enum):
     PRODUCTS = "products"
     UPLOAD = "upload"
     TARGETS = "targets"
+    BOARD = "board"          # 取締役会資料・議事録
+    LABOR = "labor"          # 経営指標（部署別 人件費・時間外）
 
 
 ALL_PAGE_KEYS: List[str] = [k.value for k in PageKey]

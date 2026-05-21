@@ -182,3 +182,105 @@ def get_db_client_for_user(
     """
     # 通常のユーザーは匿名キーでアクセス（RLS適用）
     return get_supabase_client()
+
+
+def get_user_app_role(user_id: str) -> str:
+    """
+    アプリ内ロール（admin / executive / user）を取得する
+
+    JWTの role クレームはSupabase認証ロール（"authenticated"）であり
+    アプリ内の権限ではない。アプリ内ロールは user_profiles テーブルに
+    格納されているため、ここで参照する。
+
+    Args:
+        user_id: ユーザーUUID
+
+    Returns:
+        str: アプリ内ロール。取得できない場合は "user"
+    """
+    if not user_id:
+        return "user"
+    try:
+        supabase = get_supabase_admin()
+        result = (
+            supabase.table("user_profiles")
+            .select("role")
+            .eq("id", user_id)
+            .single()
+            .execute()
+        )
+        if result.data and result.data.get("role"):
+            return result.data["role"]
+    except Exception:
+        pass
+    return "user"
+
+
+async def require_admin_or_executive(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """
+    管理者または役員ロールのみを許可する依存関数
+
+    取締役会資料・議事録、部署別人件費など機密性の高い情報を
+    返すエンドポイントで使用する。
+
+    Args:
+        current_user: 認証されたユーザー
+
+    Returns:
+        User: 認証されたユーザー情報
+
+    Raises:
+        HTTPException(403): 管理者・役員以外の場合
+    """
+    role = get_user_app_role(current_user.user_id)
+    if role not in ("admin", "executive"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="この情報にアクセスする権限がありません（管理者・役員のみ）。",
+        )
+    return current_user
+
+
+def require_page_permission(page_key: str):
+    """
+    指定ページの閲覧権限を要求する依存関数ファクトリ
+
+    取締役会資料・経営指標など、権限管理（user_page_permissions）で
+    利用者ごとに閲覧可否を制御するエンドポイントで使用する。
+    管理者は常に許可。それ以外は user_page_permissions に該当 page_key が
+    登録されている場合のみ許可する。
+
+    Args:
+        page_key: 必要なページ権限キー（例: "board", "labor"）
+
+    Returns:
+        FastAPIの依存関数
+    """
+    async def _dependency(
+        current_user: User = Depends(get_current_user),
+    ) -> User:
+        # 管理者・役員は全ページ閲覧可
+        if get_user_app_role(current_user.user_id) in ("admin", "executive"):
+            return current_user
+        # user_page_permissions に該当キーがあるか確認
+        try:
+            supabase = get_supabase_admin()
+            result = (
+                supabase.table("user_page_permissions")
+                .select("page_key")
+                .eq("user_id", current_user.user_id)
+                .eq("page_key", page_key)
+                .execute()
+            )
+            if result.data:
+                return current_user
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="この情報にアクセスする権限がありません。",
+        )
+
+    return _dependency

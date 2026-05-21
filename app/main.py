@@ -16,7 +16,7 @@ from app.core.config import settings
 from app.core.security_config import security_config
 from app.middleware.rate_limiter import RateLimitMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
-from app.api.endpoints import auth, upload, kpi, products, ecommerce, comments, regional, templates, dashboard, manufacturing, finance, complaints, targets, users, admin, daily_sales, order_forecast, furusato
+from app.api.endpoints import auth, upload, kpi, products, ecommerce, comments, regional, templates, dashboard, manufacturing, finance, complaints, targets, users, admin, daily_sales, order_forecast, furusato, board, news, hr, slack, ga4
 from app.schemas.kpi import HealthResponse, APIInfo
 
 
@@ -127,6 +127,21 @@ app.include_router(order_forecast.router, prefix="/order-forecast", tags=["予�
 
 # ふるさと納税分析エンドポイント
 app.include_router(furusato.router)
+
+# 取締役会資料・議事録エンドポイント
+app.include_router(board.router, prefix="/api/v1/board", tags=["取締役会"])
+
+# 餃子ニュースエンドポイント
+app.include_router(news.router, prefix="/api/v1/news", tags=["ニュース"])
+
+# 人事（部署別 人件費・時間外）エンドポイント
+app.include_router(hr.router, prefix="/api/v1/hr", tags=["人事"])
+
+# Slack連携エンドポイント
+app.include_router(slack.router, prefix="/api/v1/slack", tags=["Slack"])
+
+# GA4（EC Web分析）エンドポイント
+app.include_router(ga4.router, prefix="/api/v1/ga4", tags=["GA4"])
 
 
 # =============================================================================

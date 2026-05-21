@@ -112,6 +112,8 @@ class ChartDataPoint(BaseModel):
     operating_profit: Optional[Decimal] = Field(None, description="営業利益")
     sales_target: Optional[Decimal] = Field(None, description="売上目標")
     operating_profit_target: Optional[Decimal] = Field(None, description="営業利益目標")
+    sales_previous_year: Optional[Decimal] = Field(None, description="前年同月売上高")
+    operating_profit_previous_year: Optional[Decimal] = Field(None, description="前年同月営業利益")
 
 
 class AlertItem(BaseModel):

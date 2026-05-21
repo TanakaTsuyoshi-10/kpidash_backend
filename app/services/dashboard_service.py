@@ -395,7 +395,11 @@ async def get_chart_data(
 
     month_strings = [m.isoformat() for m in month_list]
 
-    # 2クエリで全データを一括取得（N+1解消: 24クエリ → 2クエリ）
+    # 前年同月リスト（各月の1年前）
+    prev_month_list = [date(m.year - 1, m.month, 1) for m in month_list]
+    prev_month_strings = [m.isoformat() for m in prev_month_list]
+
+    # 3クエリで全データを一括取得（当年実績・当年目標・前年実績）
     actual_response = supabase.table("financial_data").select(
         "month, sales_total, operating_profit"
     ).in_("month", month_strings).eq("is_target", False).execute()
@@ -404,14 +408,21 @@ async def get_chart_data(
         "month, sales_total, operating_profit"
     ).in_("month", month_strings).eq("is_target", True).execute()
 
+    prev_response = supabase.table("financial_data").select(
+        "month, sales_total, operating_profit"
+    ).in_("month", prev_month_strings).eq("is_target", False).execute()
+
     actual_by_month = {row["month"]: row for row in (actual_response.data or [])}
     target_by_month = {row["month"]: row for row in (target_response.data or [])}
+    prev_by_month = {row["month"]: row for row in (prev_response.data or [])}
 
     chart_data = []
     for target_month in month_list:
         month_str = target_month.isoformat()
+        prev_month_str = date(target_month.year - 1, target_month.month, 1).isoformat()
         actual = actual_by_month.get(month_str, {})
         target = target_by_month.get(month_str, {})
+        prev = prev_by_month.get(prev_month_str, {})
 
         chart_data.append(ChartDataPoint(
             month=target_month.strftime("%Y-%m"),
@@ -419,6 +430,8 @@ async def get_chart_data(
             operating_profit=Decimal(str(actual["operating_profit"])) if actual.get("operating_profit") else None,
             sales_target=Decimal(str(target["sales_total"])) if target.get("sales_total") else None,
             operating_profit_target=Decimal(str(target["operating_profit"])) if target.get("operating_profit") else None,
+            sales_previous_year=Decimal(str(prev["sales_total"])) if prev.get("sales_total") else None,
+            operating_profit_previous_year=Decimal(str(prev["operating_profit"])) if prev.get("operating_profit") else None,
         ))
 
     return chart_data

@@ -52,6 +52,37 @@ class Settings(BaseSettings):
     # 年度開始月（9月始まり = 9）
     FISCAL_YEAR_START_MONTH: int = 9
 
+    # =========================================================================
+    # 外部サービス連携（未設定時は各機能がサンプルデータにフォールバック）
+    # =========================================================================
+
+    # SmartHR連携（部署別 人件費・時間外）
+    SMARTHR_SUBDOMAIN: str = ""
+    SMARTHR_ACCESS_TOKEN: str = ""
+
+    # Slack連携（新規投稿・昨日の投稿）
+    SLACK_BOT_TOKEN: str = ""
+
+    # Googleアナリティクス(GA4)連携（EC Web分析）
+    GA4_PROPERTY_ID: str = ""
+    # サービスアカウントJSON認証情報（JSON文字列、またはファイルパス）
+    GA4_CREDENTIALS_JSON: str = ""
+
+    @property
+    def smarthr_enabled(self) -> bool:
+        """SmartHR連携が有効か（サブドメインとトークンが揃っているか）"""
+        return bool(self.SMARTHR_SUBDOMAIN and self.SMARTHR_ACCESS_TOKEN)
+
+    @property
+    def slack_enabled(self) -> bool:
+        """Slack連携が有効か（Botトークンが設定されているか）"""
+        return bool(self.SLACK_BOT_TOKEN)
+
+    @property
+    def ga4_enabled(self) -> bool:
+        """GA4連携が有効か（プロパティIDと認証情報が揃っているか）"""
+        return bool(self.GA4_PROPERTY_ID and self.GA4_CREDENTIALS_JSON)
+
     @property
     def allowed_origins_list(self) -> List[str]:
         """

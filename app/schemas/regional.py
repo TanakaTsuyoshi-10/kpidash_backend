@@ -63,6 +63,7 @@ class RegionalStoreData(BaseModel):
     segment_name: str = Field(..., description="店舗名")
     sales: Optional[float] = Field(None, description="売上高")
     sales_previous_year: Optional[float] = Field(None, description="前年売上高")
+    sales_two_years_ago: Optional[float] = Field(None, description="前々年売上高")
     sales_yoy_rate: Optional[float] = Field(None, description="売上高前年比（%）")
     customers: Optional[int] = Field(None, description="客数")
     customers_previous_year: Optional[int] = Field(None, description="前年客数")
@@ -86,6 +87,7 @@ class RegionalSummaryData(BaseModel):
     # 売上高
     total_sales: Optional[float] = Field(None, description="合計売上高")
     total_sales_previous_year: Optional[float] = Field(None, description="前年合計売上高")
+    total_sales_two_years_ago: Optional[float] = Field(None, description="前々年合計売上高")
     sales_yoy_rate: Optional[float] = Field(None, description="売上高前年比（%）")
     sales_yoy_diff: Optional[float] = Field(None, description="売上高前年差")
     # 目標
