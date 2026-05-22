@@ -220,7 +220,7 @@ def _payslip_overtime(slip: Dict[str, Any]) -> float:
     return overtime
 
 
-async def _fetch_smarthr_summary() -> Dict[str, Any]:
+async def _fetch_smarthr_summary(target_month: Optional[str] = None) -> Dict[str, Any]:
     """
     SmartHR API から実データを取得し、部署別×月次に集計する。
 
@@ -312,7 +312,14 @@ async def _fetch_smarthr_summary() -> Dict[str, Any]:
     all_months = sorted(
         {m for d in DEPARTMENTS for m in cost[d].keys()}, reverse=True
     )
-    current_key = all_months[0] if all_months else ""
+    # 対象月: target_month 指定があり該当データがあればそれを優先、なければ最新月
+    current_key = ""
+    if target_month:
+        tm = str(target_month)[:7]
+        if tm in all_months:
+            current_key = tm
+    if not current_key:
+        current_key = all_months[0] if all_months else ""
     previous_key = ""
     if current_key:
         year, _, month = current_key.partition("-")
@@ -352,8 +359,10 @@ async def _fetch_smarthr_summary() -> Dict[str, Any]:
             }
         )
 
-    # 月次推移（直近6ヶ月、古い順）
-    trend_keys = sorted(all_months)[-_TREND_MONTH_COUNT:]
+    # 月次推移（対象月までの直近6ヶ月、古い順）
+    trend_keys = sorted(m for m in all_months if m <= current_key)[
+        -_TREND_MONTH_COUNT:
+    ]
     labor_cost_trend: List[Dict[str, Any]] = []
     for key in trend_keys:
         _, _, month = key.partition("-")
@@ -384,9 +393,12 @@ async def _fetch_smarthr_summary() -> Dict[str, Any]:
 # =============================================================================
 
 @cached(prefix="hr", ttl=3600)
-async def get_labor_summary() -> Dict[str, Any]:
+async def get_labor_summary(target_month: Optional[str] = None) -> Dict[str, Any]:
     """
     部署別 人件費・時間外サマリーを取得する。
+
+    Args:
+        target_month: 対象月（"YYYY-MM" 形式。未指定なら最新月）
 
     SmartHR連携が無効（認証情報未設定）の場合、または取得・集計に失敗した
     場合はサンプルデータ（is_sample=True）を返す。
@@ -396,7 +408,7 @@ async def get_labor_summary() -> Dict[str, Any]:
         return _build_sample_summary()
 
     try:
-        return await _fetch_smarthr_summary()
+        return await _fetch_smarthr_summary(target_month)
     except Exception as exc:  # noqa: BLE001 - 失敗時は必ずサンプルへフォールバック
         logger.warning(
             "SmartHR API からのデータ取得に失敗したためサンプルにフォールバックします: %s",

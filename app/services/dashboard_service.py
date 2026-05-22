@@ -368,6 +368,7 @@ async def get_management_indicators(
 async def get_chart_data(
     supabase: Client,
     months: int = 12,
+    end_month: Optional[date] = None,
 ) -> List[ChartDataPoint]:
     """
     推移グラフ用データを取得する
@@ -375,13 +376,17 @@ async def get_chart_data(
     Args:
         supabase: Supabaseクライアント
         months: 取得する月数
+        end_month: 推移の終端月（未指定なら現在月）
 
     Returns:
         List[ChartDataPoint]: グラフデータリスト
     """
-    # 現在の月から過去N ヶ月の対象月リストを構築
-    today = date.today()
-    current_month = date(today.year, today.month, 1)
+    # 終端月から過去N ヶ月の対象月リストを構築（end_month 指定時はその月を終端とする）
+    if end_month is not None:
+        current_month = date(end_month.year, end_month.month, 1)
+    else:
+        today = date.today()
+        current_month = date(today.year, today.month, 1)
 
     month_list = []
     for i in range(months - 1, -1, -1):

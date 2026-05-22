@@ -3,6 +3,7 @@
 
 経営層向けダッシュボードのデータ取得APIを提供する。
 """
+from datetime import date
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query, HTTPException
@@ -263,6 +264,10 @@ async def get_chart(
         ge=1,
         le=36
     ),
+    end_month: Optional[date] = Query(
+        default=None,
+        description="推移の終端月（YYYY-MM-DD。未指定なら現在月）",
+    ),
     supabase: Client = Depends(get_supabase_client),
 ) -> List[ChartDataPoint]:
     """
@@ -272,6 +277,7 @@ async def get_chart(
         return await service_get_chart_data(
             supabase=supabase,
             months=months,
+            end_month=end_month,
         )
     except Exception as e:
         raise HTTPException(
