@@ -4,7 +4,7 @@
 SmartHR連携による部署別の人件費・時間外労働のPydanticスキーマを定義する。
 認証情報未手配の間はサンプルデータを返すため is_sample フラグを持つ。
 """
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -61,6 +61,12 @@ class LaborSummaryResponse(BaseModel):
     )
     labor_cost_trend: List[LaborCostTrendPoint] = Field(
         default_factory=list, description="部署別 人件費の月次推移"
+    )
+    labor_cost_total: Optional[DepartmentLaborCost] = Field(
+        default=None, description="人件費の全部署合計（その他含む）"
+    )
+    overtime_total: Optional[DepartmentOvertime] = Field(
+        default=None, description="時間外労働の全社合計（1人あたり平均）"
     )
     is_sample: bool = Field(
         default=True,

@@ -29,7 +29,10 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 # 集計対象の部署バケット（ダッシュボードの表示名）
-DEPARTMENTS: List[str] = ["店舗部門", "通販部門", "製造部門", "本社"]
+# - 「役員」: SmartHRで部署が未設定の従業員（丸岡久浩・丸岡徹也ら役員）の受け皿。
+# - 「その他」: 想定外の部署、crews一覧に無い支給先（退職者等）の受け皿。
+# どの支給も必ずいずれかに計上され、合計＝総支給額と一致する。
+DEPARTMENTS: List[str] = ["店舗部門", "通販部門", "製造部門", "本社", "役員", "その他"]
 
 # 人件費推移の対象月数（直近）
 _TREND_MONTH_COUNT = 6
@@ -51,6 +54,8 @@ _SAMPLE_TREND: Dict[str, List[float]] = {
     "通販部門": [3.0, 3.1, 3.2, 3.2, 3.3, 3.4],
     "製造部門": [5.4, 5.5, 5.5, 5.6, 5.6, 5.7],
     "本社": [2.8, 2.8, 2.9, 2.9, 2.9, 2.9],
+    "役員": [2.6, 2.7, 2.7, 2.8, 2.8, 2.8],
+    "その他": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
 }
 _SAMPLE_TREND_MONTHS: List[str] = ["11月", "12月", "1月", "2月", "3月", "4月"]
 
@@ -60,6 +65,8 @@ _SAMPLE_LABOR_COST: Dict[str, tuple] = {
     "通販部門": (3.4, 3.1),
     "製造部門": (5.7, 5.5),
     "本社": (2.9, 2.8),
+    "役員": (2.8, 2.6),
+    "その他": (0.0, 0.0),
 }
 
 # 時間外労働のサンプル値（部署 → (当月, 前年同月)、時間/月）
@@ -68,6 +75,8 @@ _SAMPLE_OVERTIME: Dict[str, tuple] = {
     "通販部門": (14.5, 12.0),
     "製造部門": (20.1, 22.3),
     "本社": (10.2, 9.5),
+    "役員": (0.0, 0.0),
+    "その他": (0.0, 0.0),
 }
 
 
@@ -82,18 +91,23 @@ def _calc_yoy_rate(current: float, previous_year: float) -> float:
     return round((current - previous_year) / previous_year * 100, 1)
 
 
-def _bucket_for_department(full_name: str) -> Optional[str]:
+def _bucket_for_department(full_name: str) -> str:
     """
-    SmartHRの部署 full_name をダッシュボードの4部門バケットに振り分ける。
+    SmartHRの部署 full_name をダッシュボードの部門バケットに振り分ける。
 
     SmartHRの最上位部署は「販売部門」「製造部」「事務」。
     - 販売部門/... → 店舗部門
     - 製造部/...   → 製造部門
     - 事務/通販事業部 → 通販部門
-    - 事務（その他、総務部など） → 本社
+    - 事務（庶務課、総務部など） → 本社
+    - 部署未設定 → 役員（SmartHRで部署が未登録の役員。丸岡久浩・丸岡徹也ら）
+    - 上記いずれにも該当しない想定外の部署 → その他
+
+    どの従業員も必ずいずれかのバケットに入るため、支給した給与は
+    合計に漏れなく計上される。
     """
     if not full_name:
-        return None
+        return "役員"
     top = full_name.split("/")[0].strip()
     if top == "販売部門":
         return "店舗部門"
@@ -101,7 +115,7 @@ def _bucket_for_department(full_name: str) -> Optional[str]:
         return "製造部門"
     if top == "事務":
         return "通販部門" if "通販事業部" in full_name else "本社"
-    return None
+    return "その他"
 
 
 def _build_sample_summary() -> Dict[str, Any]:
@@ -131,10 +145,36 @@ def _build_sample_summary() -> Dict[str, Any]:
         }
         for idx, month in enumerate(_SAMPLE_TREND_MONTHS)
     ]
+
+    # 合計（人件費＝全部署の総支給額の合計、時間外＝全社の1人あたり平均）
+    total_cur_cost = round(sum(c for c, _ in _SAMPLE_LABOR_COST.values()), 1)
+    total_prev_cost = round(sum(p for _, p in _SAMPLE_LABOR_COST.values()), 1)
+    labor_cost_total = {
+        "department": "合計",
+        "current": total_cur_cost,
+        "previous_year": total_prev_cost,
+        "yoy_rate": _calc_yoy_rate(total_cur_cost, total_prev_cost),
+    }
+    ot_dept_count = len(_SAMPLE_OVERTIME) or 1
+    total_cur_ot = round(
+        sum(c for c, _ in _SAMPLE_OVERTIME.values()) / ot_dept_count, 1
+    )
+    total_prev_ot = round(
+        sum(p for _, p in _SAMPLE_OVERTIME.values()) / ot_dept_count, 1
+    )
+    overtime_total = {
+        "department": "合計",
+        "current": total_cur_ot,
+        "previous_year": total_prev_ot,
+        "yoy_rate": _calc_yoy_rate(total_cur_ot, total_prev_ot),
+    }
+
     return {
         "labor_costs": labor_costs,
         "overtime": overtime,
         "labor_cost_trend": labor_cost_trend,
+        "labor_cost_total": labor_cost_total,
+        "overtime_total": overtime_total,
         "is_sample": True,
     }
 
@@ -256,9 +296,8 @@ async def _fetch_smarthr_summary(target_month: Optional[str] = None) -> Dict[str
                     if isinstance(cd, dict) and cd.get("full_name"):
                         full_name = cd["full_name"]
                         break
-            bucket = _bucket_for_department(full_name)
-            if bucket:
-                bucket_by_crew[str(crew_id)] = bucket
+            # どの従業員も必ずいずれかのバケットに入る（部署未設定は「役員」）
+            bucket_by_crew[str(crew_id)] = _bucket_for_department(full_name)
 
         # 給与（payment_type=salary・status=fixed）のみを対象に、
         # 給与計算期間でdedup（同一期間は published_at が新しいものを採用）し直近分を選択
@@ -293,9 +332,10 @@ async def _fetch_smarthr_summary(target_month: Optional[str] = None) -> Dict[str
                 client, f"/payrolls/{payroll['id']}/payslips"
             )
             for slip in payslips:
-                bucket = bucket_by_crew.get(str(slip.get("crew_id") or ""))
-                if not bucket:
-                    continue
+                # 部署不明・crews未登録の従業員も「その他」として必ず計上する
+                bucket = (
+                    bucket_by_crew.get(str(slip.get("crew_id") or "")) or "その他"
+                )
                 cost[bucket][month_key] = (
                     cost[bucket].get(month_key, 0.0) + _payslip_gross(slip)
                 )
@@ -380,10 +420,43 @@ async def _fetch_smarthr_summary(target_month: Optional[str] = None) -> Dict[str
             }
         )
 
+    # 合計（人件費＝全部署の総支給額の合計＝支給した給与の全額）
+    total_cur_cost = _to_million(
+        sum(cost[d].get(current_key, 0.0) for d in DEPARTMENTS)
+    )
+    total_prev_cost = _to_million(
+        sum(cost[d].get(previous_key, 0.0) for d in DEPARTMENTS)
+    )
+    labor_cost_total = {
+        "department": "合計",
+        "current": total_cur_cost,
+        "previous_year": total_prev_cost,
+        "yoy_rate": _calc_yoy_rate(total_cur_cost, total_prev_cost),
+    }
+
+    # 時間外の合計＝全社の1人あたり平均（総時間÷総明細件数）
+    total_cur_cnt = sum(ot_cnt[d].get(current_key, 0) for d in DEPARTMENTS) or 1
+    total_prev_cnt = sum(ot_cnt[d].get(previous_key, 0) for d in DEPARTMENTS) or 1
+    total_cur_ot = round(
+        sum(ot_sum[d].get(current_key, 0.0) for d in DEPARTMENTS) / total_cur_cnt, 1
+    )
+    total_prev_ot = round(
+        sum(ot_sum[d].get(previous_key, 0.0) for d in DEPARTMENTS) / total_prev_cnt,
+        1,
+    )
+    overtime_total = {
+        "department": "合計",
+        "current": total_cur_ot,
+        "previous_year": total_prev_ot,
+        "yoy_rate": _calc_yoy_rate(total_cur_ot, total_prev_ot),
+    }
+
     return {
         "labor_costs": labor_costs,
         "overtime": overtime,
         "labor_cost_trend": labor_cost_trend,
+        "labor_cost_total": labor_cost_total,
+        "overtime_total": overtime_total,
         "is_sample": False,
     }
 
