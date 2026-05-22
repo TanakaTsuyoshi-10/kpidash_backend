@@ -237,6 +237,15 @@ async def warm_cache():
             except Exception as e:
                 print(f"   キャッシュウォーミングスキップ ({dept['slug']}): {e}")
 
+        # 餃子ニュースを温める（永続キャッシュ news_cache にも保存され、
+        # デプロイ・インスタンス再生成の直後から安定して表示できる）
+        try:
+            from app.services.news_service import get_gyoza_news
+
+            await get_gyoza_news()
+        except Exception as e:
+            print(f"   キャッシュウォーミングスキップ (news): {e}")
+
         print(f"   キャッシュウォーミング: 完了")
     except Exception as e:
         print(f"   キャッシュウォーミング: エラー ({e})")
