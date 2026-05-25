@@ -58,10 +58,17 @@ def _get_store_metadata(supabase: Client, department_id: str):
 
 
 def _fetch_all(query_builder) -> list:
-    """Supabaseの1000行制限を回避して全行を取得する"""
+    """Supabaseの1000行制限を回避して全行を取得する。
+
+    PostgRESTの max-rows のデフォルトは 1000。`batch` をそれより大きく
+    設定すると、サーバーが 1000 行で打ち切ったレスポンスを「もう無い」と
+    誤検知して途中で終了し、後半のセグメントの値が抜け落ちる（店舗分析の
+    累計表示で一部の店舗が空になる原因だった）。batch を 1000 に合わせる
+    ことで `len < batch` の判定が正しく機能する。
+    """
     all_data = []
     offset = 0
-    batch = 5000
+    batch = 1000
     while True:
         result = query_builder.range(offset, offset + batch - 1).execute()
         all_data.extend(result.data)
