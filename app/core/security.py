@@ -3,9 +3,14 @@
 
 Supabase AuthのJWTトークン検証機能を提供する。
 JWT_SECRETを使ったローカル検証を優先し、失敗時はリモート検証にフォールバック。
+検証結果は短時間（5分）プロセス内キャッシュし、同一トークンの再検証コストを
+排除する（Supabase が非対称鍵に移行している環境ではローカル検証が常に失敗
+してリモートにフォールバックするため、毎リクエストで Supabase Auth API を
+叩くと著しく遅延する）。
 """
 import logging
-from typing import Optional, Dict, Any
+import time
+from typing import Optional, Dict, Any, Tuple
 
 from jose import jwt, JWTError
 from supabase import create_client
@@ -13,6 +18,27 @@ from supabase import create_client
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# 検証結果キャッシュ（token -> (payload, cached_at_epoch)）
+_TOKEN_CACHE: Dict[str, Tuple[Dict[str, Any], float]] = {}
+_TOKEN_CACHE_TTL_SECONDS = 300  # 5分
+_TOKEN_CACHE_MAX_ENTRIES = 2048
+
+# ローカル検証失敗のログ抑制（同じ理由を何百回も警告に出さない）
+_local_decode_warning_emitted = False
+
+
+def _purge_token_cache(now: float) -> None:
+    """TTL切れエントリと、超過分の古いエントリを削除する。"""
+    cutoff = now - _TOKEN_CACHE_TTL_SECONDS
+    expired = [k for k, (_, ts) in _TOKEN_CACHE.items() if ts < cutoff]
+    for k in expired:
+        _TOKEN_CACHE.pop(k, None)
+    if len(_TOKEN_CACHE) > _TOKEN_CACHE_MAX_ENTRIES:
+        # 古い順に削除
+        sorted_keys = sorted(_TOKEN_CACHE.items(), key=lambda kv: kv[1][1])
+        for k, _ in sorted_keys[: len(_TOKEN_CACHE) - _TOKEN_CACHE_MAX_ENTRIES]:
+            _TOKEN_CACHE.pop(k, None)
 
 
 class TokenValidationError(Exception):
@@ -70,6 +96,8 @@ def decode_token(token: str) -> Dict[str, Any]:
 
     ローカルJWT検証を優先し、失敗時はSupabase Auth APIにフォールバック。
     JWT_SECRETが正しく設定されていればローカル検証のみで完結する。
+    検証結果は最大 _TOKEN_CACHE_TTL_SECONDS 秒プロセス内キャッシュし、
+    同一トークンの再検証を避ける。
 
     Args:
         token: Authorizationヘッダーから取得したJWTトークン
@@ -80,15 +108,36 @@ def decode_token(token: str) -> Dict[str, Any]:
     Raises:
         TokenValidationError: トークンが無効、期限切れ、または検証失敗時
     """
+    global _local_decode_warning_emitted
+
+    now = time.time()
+
+    # キャッシュ確認
+    cached = _TOKEN_CACHE.get(token)
+    if cached is not None and now - cached[1] < _TOKEN_CACHE_TTL_SECONDS:
+        return cached[0]
+
     # ローカルJWT検証を試行
     try:
-        return _decode_token_local(token)
+        payload = _decode_token_local(token)
+        _TOKEN_CACHE[token] = (payload, now)
+        _purge_token_cache(now)
+        return payload
     except (JWTError, Exception) as local_err:
-        logger.warning("ローカルJWT検証失敗（リモートにフォールバック）: %s", local_err)
+        if not _local_decode_warning_emitted:
+            logger.warning(
+                "ローカルJWT検証失敗（リモートにフォールバック）: %s "
+                "（このログはプロセスあたり1回のみ表示します）",
+                local_err,
+            )
+            _local_decode_warning_emitted = True
 
     # フォールバック: Supabase Auth APIで検証
     try:
-        return _decode_token_remote(token)
+        payload = _decode_token_remote(token)
+        _TOKEN_CACHE[token] = (payload, now)
+        _purge_token_cache(now)
+        return payload
     except TokenValidationError:
         raise
     except Exception as e:
