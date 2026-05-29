@@ -140,7 +140,7 @@ async def get_current_user_profile(
 
     try:
         response = supabase.table("user_profiles").select(
-            "id, email, display_name, role"
+            "id, email, display_name, role, is_active"
         ).eq("id", user_id).execute()
 
         if response.data and len(response.data) > 0:
@@ -159,6 +159,7 @@ async def get_current_user_profile(
                 display_name=user.get("display_name"),
                 role=user_role,
                 is_admin=user_role == "admin",
+                is_active=bool(user.get("is_active", True)),
                 allowed_pages=allowed_pages,
             )
             cache.set(cache_key, result, ttl=300)
@@ -383,8 +384,14 @@ async def update_user(
                 user_id=None,
             )
 
-        # プロファイルキャッシュを無効化
+        # プロファイルキャッシュを無効化（is_active 等の即時反映のため）
         cache.delete(f"user:profile:{user_id}")
+        try:
+            from app.api.deps import invalidate_active_flag_cache
+
+            invalidate_active_flag_cache(user_id)
+        except Exception:
+            pass
 
         return UserOperationResult(
             success=True,
@@ -525,6 +532,15 @@ async def deactivate_user(
                 message="ユーザーが見つかりません",
                 user_id=None,
             )
+
+        # キャッシュ無効化（無効化を即時反映するため）
+        cache.delete(f"user:profile:{user_id}")
+        try:
+            from app.api.deps import invalidate_active_flag_cache
+
+            invalidate_active_flag_cache(user_id)
+        except Exception:
+            pass
 
         return UserOperationResult(
             success=True,

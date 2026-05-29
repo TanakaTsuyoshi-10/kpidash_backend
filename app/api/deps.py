@@ -4,7 +4,8 @@
 FastAPIの依存注入機能を使用して、認証・DB接続などの共通処理を提供する。
 各エンドポイントで Depends() を使用してこれらの依存を注入できる。
 """
-from typing import Generator, Optional
+import time
+from typing import Dict, Generator, Optional, Tuple
 
 from fastapi import Depends, HTTPException, Header, status
 from supabase import create_client, Client
@@ -16,6 +17,11 @@ from app.core.security import (
     TokenValidationError,
 )
 from app.schemas.kpi import User
+
+# user_id -> (is_active, cached_at_epoch)。無効化操作の即時反映と
+# 認証エンドポイントの低レイテンシを両立する短時間キャッシュ。
+_ACTIVE_FLAG_CACHE: Dict[str, Tuple[bool, float]] = {}
+_ACTIVE_FLAG_TTL_SECONDS = 60
 
 
 _supabase_client: Optional[Client] = None
@@ -65,6 +71,47 @@ def get_supabase_admin() -> Client:
     return _supabase_admin
 
 
+def _is_user_active(user_id: str) -> bool:
+    """user_profiles.is_active を短時間キャッシュ付きで参照する。
+
+    無効化されたアカウントを管理画面で切り替えた直後でも、最長
+    _ACTIVE_FLAG_TTL_SECONDS 以内にアクセスが拒否される。
+    DBエラー時は安全側に倒し True（通過）を返す（正常ユーザーの巻き添え防止）。
+    """
+    if not user_id:
+        return True
+
+    now = time.time()
+    cached = _ACTIVE_FLAG_CACHE.get(user_id)
+    if cached is not None and now - cached[1] < _ACTIVE_FLAG_TTL_SECONDS:
+        return cached[0]
+
+    try:
+        supabase = get_supabase_admin()
+        result = (
+            supabase.table("user_profiles")
+            .select("is_active")
+            .eq("id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            active = bool(result.data[0].get("is_active", True))
+        else:
+            # プロファイル未作成 → 通過させる（既存挙動互換）
+            active = True
+    except Exception:
+        active = True
+
+    _ACTIVE_FLAG_CACHE[user_id] = (active, now)
+    return active
+
+
+def invalidate_active_flag_cache(user_id: str) -> None:
+    """ユーザーの無効化/有効化を即時反映するためのキャッシュ破棄。"""
+    _ACTIVE_FLAG_CACHE.pop(user_id, None)
+
+
 async def get_current_user(
     authorization: Optional[str] = Header(None, description="Bearer token")
 ) -> User:
@@ -73,6 +120,7 @@ async def get_current_user(
 
     AuthorizationヘッダーからJWTトークンを抽出し、検証して
     ユーザー情報を返す。認証必須のエンドポイントで使用する。
+    アカウントが無効化（is_active=false）されている場合は 403 で拒否する。
 
     Args:
         authorization: Authorizationヘッダーの値（"Bearer <token>"形式）
@@ -82,6 +130,7 @@ async def get_current_user(
 
     Raises:
         HTTPException(401): トークンが無効または期限切れの場合
+        HTTPException(403): アカウントが無効化されている場合
     """
     try:
         # Authorizationヘッダーからトークンを抽出
@@ -89,6 +138,13 @@ async def get_current_user(
 
         # トークンを検証してユーザー情報を取得
         user_info = verify_token(token)
+
+        # 無効化されたアカウントはアクセス拒否
+        if not _is_user_active(user_info.get("user_id")):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="このアカウントは無効化されています。管理者にお問い合わせください。",
+            )
 
         # Userスキーマに変換して返す
         return User(**user_info)

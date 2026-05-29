@@ -131,6 +131,7 @@ class CurrentUserResponse(BaseModel):
     display_name: Optional[str] = Field(None, description="表示名")
     role: str = Field(..., description="権限")
     is_admin: bool = Field(default=False, description="管理者フラグ")
+    is_active: bool = Field(default=True, description="アカウント有効フラグ")
     allowed_pages: List[str] = Field(default_factory=list, description="閲覧許可ページ一覧")
 
 
