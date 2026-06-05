@@ -18,17 +18,19 @@ from app.services.japanese_holidays import is_japanese_holiday
 # ヘルパー関数
 # =============================================================================
 
-def _fetch_all(query_builder) -> list:
+def _fetch_all(query_builder, order_by: str = "id") -> list:
     """Supabaseの1000行制限を回避して全行を取得する
 
     ORDER BYを指定しないとPostgreSQLがリクエストごとに異なる順序で返すため、
-    ページネーション時に行の重複・欠落が発生する。idでソートして安定化させる。
+    ページネーション時に行の重複・欠落が発生する。デフォルトでは id でソート
+    するが、id を持たないビュー（daily_sales_by_segment 等）を扱う場合は
+    order_by 引数で別の列を指定する。
     """
     all_data = []
     offset = 0
     batch = 1000
     while True:
-        result = query_builder.order("id").range(offset, offset + batch - 1).execute()
+        result = query_builder.order(order_by).range(offset, offset + batch - 1).execute()
         all_data.extend(result.data)
         if len(result.data) < batch:
             break
@@ -178,40 +180,44 @@ async def get_daily_sales_summary(
             "totals": [],
         }
 
-    # 当月売上データ取得（1000行制限回避）
+    # 当月売上データ取得（日次集計ビューを使用 → 行数 ~13,000 → ~540 に削減）
     current_sales = _fetch_all(
-        supabase.table("hourly_sales").select(
+        supabase.table("daily_sales_by_segment").select(
             "date, segment_id, sales"
         ).gte("date", start.isoformat()).lte(
             "date", end.isoformat()
-        ).in_("segment_id", segment_ids)
+        ).in_("segment_id", segment_ids),
+        order_by="date",
     )
 
-    # 当月客数データ取得（hourly_customers: ユニーク客数）
+    # 当月客数データ取得（hourly_customers の日次集計ビュー）
     current_customers = _fetch_all(
-        supabase.table("hourly_customers").select(
+        supabase.table("daily_customers_by_segment").select(
             "date, segment_id, customer_count"
         ).gte("date", start.isoformat()).lte(
             "date", end.isoformat()
-        ).in_("segment_id", segment_ids)
+        ).in_("segment_id", segment_ids),
+        order_by="date",
     )
 
     # 前年同月売上データ取得
     prev_sales = _fetch_all(
-        supabase.table("hourly_sales").select(
+        supabase.table("daily_sales_by_segment").select(
             "date, segment_id, sales"
         ).gte("date", prev_start.isoformat()).lte(
             "date", prev_end.isoformat()
-        ).in_("segment_id", segment_ids)
+        ).in_("segment_id", segment_ids),
+        order_by="date",
     )
 
     # 前年同月客数データ取得
     prev_customers = _fetch_all(
-        supabase.table("hourly_customers").select(
+        supabase.table("daily_customers_by_segment").select(
             "date, segment_id, customer_count"
         ).gte("date", prev_start.isoformat()).lte(
             "date", prev_end.isoformat()
-        ).in_("segment_id", segment_ids)
+        ).in_("segment_id", segment_ids),
+        order_by="date",
     )
 
     # 当月: (date, segment_id) でグループ集計
@@ -514,13 +520,13 @@ async def get_daily_trend(
         ).eq("id", segment_id).single().execute()
         segment_name = seg_response.data["name"]
 
-    # 当月売上データ（1000行制限回避）
-    sales_query = supabase.table("hourly_sales").select(
+    # 当月売上データ（日次集計ビュー）
+    sales_query = supabase.table("daily_sales_by_segment").select(
         "date, sales"
     ).gte("date", start.isoformat()).lte("date", end.isoformat())
 
-    # 当月客数データ
-    cust_query = supabase.table("hourly_customers").select(
+    # 当月客数データ（日次集計ビュー）
+    cust_query = supabase.table("daily_customers_by_segment").select(
         "date, customer_count"
     ).gte("date", start.isoformat()).lte("date", end.isoformat())
 
@@ -534,16 +540,16 @@ async def get_daily_trend(
             sales_query = sales_query.in_("segment_id", segment_ids)
             cust_query = cust_query.in_("segment_id", segment_ids)
 
-    current_sales_data = _fetch_all(sales_query)
-    current_cust_data = _fetch_all(cust_query)
+    current_sales_data = _fetch_all(sales_query, order_by="date")
+    current_cust_data = _fetch_all(cust_query, order_by="date")
 
-    # 前年同月売上データ
-    prev_sales_query = supabase.table("hourly_sales").select(
+    # 前年同月売上データ（日次集計ビュー）
+    prev_sales_query = supabase.table("daily_sales_by_segment").select(
         "date, sales"
     ).gte("date", prev_start.isoformat()).lte("date", prev_end.isoformat())
 
-    # 前年同月客数データ
-    prev_cust_query = supabase.table("hourly_customers").select(
+    # 前年同月客数データ（日次集計ビュー）
+    prev_cust_query = supabase.table("daily_customers_by_segment").select(
         "date, customer_count"
     ).gte("date", prev_start.isoformat()).lte("date", prev_end.isoformat())
 
@@ -555,8 +561,8 @@ async def get_daily_trend(
             prev_sales_query = prev_sales_query.in_("segment_id", segment_ids)
             prev_cust_query = prev_cust_query.in_("segment_id", segment_ids)
 
-    prev_sales_data = _fetch_all(prev_sales_query)
-    prev_cust_data = _fetch_all(prev_cust_query)
+    prev_sales_data = _fetch_all(prev_sales_query, order_by="date")
+    prev_cust_data = _fetch_all(prev_cust_query, order_by="date")
 
     # 日別に集計
     current_daily: Dict[str, Dict[str, Any]] = defaultdict(
