@@ -27,6 +27,11 @@ _TOKEN_CACHE_MAX_ENTRIES = 2048
 # ローカル検証失敗のログ抑制（同じ理由を何百回も警告に出さない）
 _local_decode_warning_emitted = False
 
+# リモート検証時の一時失敗（Supabaseの一時的な混雑/タイムアウト）で
+# 有効なトークンを 401 扱いしないよう、リトライとリトライ間隔を設定する。
+_REMOTE_VALIDATE_RETRIES = 2      # 追加で最大2回リトライ（合計3回）
+_REMOTE_VALIDATE_BACKOFF = 0.25   # 指数バックオフの基準秒
+
 
 def _purge_token_cache(now: float) -> None:
     """TTL切れエントリと、超過分の古いエントリを削除する。"""
@@ -72,22 +77,55 @@ def _decode_token_local(token: str) -> Dict[str, Any]:
 
 
 def _decode_token_remote(token: str) -> Dict[str, Any]:
-    """Supabase Auth APIでトークンを検証する（フォールバック用）"""
+    """Supabase Auth APIでトークンを検証する（フォールバック用）
+
+    Supabase 側の一時的な混雑（statement timeout 等）で有効なトークンが
+    401 扱いになりログアウトさせられる事象が観測されたため、
+    ネットワーク/サーバ由来の失敗はリトライで吸収する。
+    Supabase が明示的に「無効なユーザ」と返した場合のみ 401 として上げる。
+    リトライ後も復帰できない場合は 503 相当のメッセージで例外を投げ、
+    上位でのハンドリングと区別できるようにする。
+    """
     supabase = create_client(
         settings.SUPABASE_URL,
         settings.SUPABASE_ANON_KEY
     )
-    user_response = supabase.auth.get_user(token)
-    if not user_response or not user_response.user:
-        raise TokenValidationError("無効なアクセストークンです", status_code=401)
-    user = user_response.user
-    return {
-        "sub": user.id,
-        "email": user.email,
-        "app_metadata": user.app_metadata or {},
-        "user_metadata": user.user_metadata or {},
-        "role": user.role or "authenticated",
-    }
+
+    last_error: Optional[Exception] = None
+    for attempt in range(_REMOTE_VALIDATE_RETRIES + 1):
+        try:
+            user_response = supabase.auth.get_user(token)
+        except Exception as exc:
+            # ネットワーク/サーバ由来の失敗 → 短い待機の後リトライ
+            last_error = exc
+            if attempt < _REMOTE_VALIDATE_RETRIES:
+                time.sleep(_REMOTE_VALIDATE_BACKOFF * (2 ** attempt))
+                continue
+            break
+        else:
+            if user_response and user_response.user:
+                user = user_response.user
+                return {
+                    "sub": user.id,
+                    "email": user.email,
+                    "app_metadata": user.app_metadata or {},
+                    "user_metadata": user.user_metadata or {},
+                    "role": user.role or "authenticated",
+                }
+            # get_user が None を返した = 明示的な「無効」
+            raise TokenValidationError(
+                "無効なアクセストークンです", status_code=401
+            )
+
+    # リトライを尽くしても Supabase 応答が得られなかった → 一時的な障害
+    logger.warning(
+        "Supabase Auth API へのトークン検証がリトライしても失敗しました: %s",
+        last_error,
+    )
+    raise TokenValidationError(
+        "認証サーバに一時的に接続できません。しばらく待って再試行してください。",
+        status_code=503,
+    )
 
 
 def decode_token(token: str) -> Dict[str, Any]:
@@ -139,11 +177,16 @@ def decode_token(token: str) -> Dict[str, Any]:
         _purge_token_cache(now)
         return payload
     except TokenValidationError:
+        # 401（本当に無効）／503（一時障害）は _decode_token_remote 側で
+        # ステータスコードを設定済み。上位でハンドリング可能。
         raise
     except Exception as e:
+        # 想定外の例外は「無効」ではなく「一時障害」として扱い、有効な
+        # トークンでも即ログアウトさせないようにする。
+        logger.warning("トークン検証中に想定外の例外: %s", e)
         raise TokenValidationError(
-            f"無効なアクセストークンです: {str(e)}",
-            status_code=401
+            "認証サーバに一時的に接続できません。しばらく待って再試行してください。",
+            status_code=503,
         )
 
 
