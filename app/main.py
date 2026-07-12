@@ -16,7 +16,7 @@ from app.core.config import settings
 from app.core.security_config import security_config
 from app.middleware.rate_limiter import RateLimitMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
-from app.api.endpoints import auth, upload, kpi, products, ecommerce, comments, regional, templates, dashboard, manufacturing, finance, complaints, targets, users, admin, daily_sales, order_forecast, furusato, board, news, hr, slack, ga4
+from app.api.endpoints import auth, upload, kpi, products, ecommerce, comments, regional, templates, dashboard, manufacturing, finance, complaints, targets, users, admin, daily_sales, order_forecast, furusato, board, news, hr, slack, ga4, approvals, approval_types, approval_delegates
 from app.schemas.kpi import HealthResponse, APIInfo
 
 
@@ -142,6 +142,11 @@ app.include_router(slack.router, prefix="/api/v1/slack", tags=["Slack"])
 
 # GA4（EC Web分析）エンドポイント
 app.include_router(ga4.router, prefix="/api/v1/ga4", tags=["GA4"])
+
+# 承認ワークフローエンドポイント
+app.include_router(approvals.router, prefix="/api/v1/approvals", tags=["承認ワークフロー"])
+app.include_router(approval_types.router, prefix="/api/v1/approval-types", tags=["承認ワークフロー"])
+app.include_router(approval_delegates.router, prefix="/api/v1/approval-delegates", tags=["承認ワークフロー"])
 
 
 # =============================================================================

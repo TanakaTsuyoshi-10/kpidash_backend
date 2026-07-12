@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     # サービスアカウントJSON認証情報（JSON文字列、またはファイルパス）
     GA4_CREDENTIALS_JSON: str = ""
 
+    # 承認ワークフロー: メール通知（Resend）
+    RESEND_API_KEY: str = ""
+    RESEND_FROM_ADDRESS: str = "KPI管理システム <noreply@gyo-za.co.jp>"
+    # 承認画面への直リンク生成に使うフロントエンドURL
+    APP_BASE_URL: str = "https://kpidash-frontend.vercel.app"
+
     @property
     def smarthr_enabled(self) -> bool:
         """SmartHR連携が有効か（サブドメインとトークンが揃っているか）"""

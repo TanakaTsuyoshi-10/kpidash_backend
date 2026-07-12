@@ -35,6 +35,7 @@ class PageKey(str, Enum):
     BOARD = "board"          # 取締役会資料・議事録
     LABOR = "labor"          # 経営指標（部署別 人件費・時間外）
     SLACK = "slack"          # ダッシュボードの Slack 投稿表示
+    APPROVALS = "approvals"  # 承認ワークフロー
 
 
 ALL_PAGE_KEYS: List[str] = [k.value for k in PageKey]
