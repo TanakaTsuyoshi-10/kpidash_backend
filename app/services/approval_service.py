@@ -766,10 +766,17 @@ async def publish_to_slack(supabase: Client, request_id: str) -> bool:
         return False
 
     # 添付画像を Storage からダウンロード
+    # attachments はアップロード履歴（追加専用）のため、エディタで削除された
+    # 画像が残っている場合がある。本文HTMLに実在する画像だけを投稿対象にする。
+    caption_html = content.get("caption_html") or ""
     image_bytes_list = []
     for att in content.get("attachments") or []:
         path = att.get("path")
+        url = att.get("url") or ""
         if not path:
+            continue
+        if url and url not in caption_html:
+            logger.info("本文から削除済みの添付をスキップ: %s", path)
             continue
         try:
             data = supabase.storage.from_(ATTACHMENTS_BUCKET).download(path)
