@@ -11,7 +11,7 @@ from typing import Dict, Any, List, Optional
 from supabase import Client
 
 from app.services.cache_service import cached
-from app.services.japanese_holidays import is_japanese_holiday
+# 日次分析の前年比較は「前年の同一曜日」で統一する（祝日カテゴリ判定は不要）。
 
 
 # =============================================================================
@@ -68,61 +68,22 @@ def _previous_year_same_weekday(d: date) -> date:
     return base + timedelta(days=diff)
 
 
-def _day_category(d: date) -> str:
-    """日付を売上比較用のカテゴリに分類する。
-
-    祝日 / 日曜 / 土曜 / 金曜 / 平日(月-木) の5カテゴリ。
-    金曜は週末前で売上スパイクがあるため、平日（月-木）と切り離して
-    独立カテゴリにする。これにより「今年度の金曜を前年の木曜と比較して
-    数値が大きくずれ込む」のを防ぐ。
-    """
-    if is_japanese_holiday(d):
-        return "holiday"
-    wd = d.weekday()  # 月=0 ... 日=6
-    if wd == 6:
-        return "sunday"
-    if wd == 5:
-        return "saturday"
-    if wd == 4:
-        return "friday"  # 金曜は週末前のスパイクがあるため独立扱い
-    return "weekday"  # 月-木
-
-
-# 前年比マッチの探索半径（日数）。
-# 金曜・土曜・日曜などは7日周期で出現するため、±7 にすると必ず候補が
-# 1つ以上見つかる（ただし全て祝日になっているケースは None になる）。
-_PREV_SEARCH_RADIUS = 7
-
-
 def _previous_year_matching_date(d: date) -> Optional[date]:
-    """前年の比較対象日を返す（カテゴリ＝祝日/日/土/金/平日 を考慮）。
+    """前年の比較対象日（＝前年の同一曜日）を返す。
 
-    前年の同日付を起点に ±_PREV_SEARCH_RADIUS 日の範囲で、同じカテゴリの
-    日を探す。複数候補があれば日付差が最も小さい日を採用する。
-    同カテゴリの日が見つからない場合は None を返し、呼び出し側で
-    「比較不可（YoY=None）」として扱う。
+    比較ロジックは「前年の同じ曜日」で統一する。今年度の日付の曜日と
+    同じ曜日を、前年の同日付に最も近い日から選ぶ（`_previous_year_same_weekday`）。
+    その結果、比較対象が前月・翌月にまたがることは許容する。
 
-    旧ロジック（同曜日マッチへのフォールバック）は意図的に廃止した。
-    これは「今年度が金曜日ではない場合に前年の金曜と比較してしまう」
-    現象を防ぐため。例えば今年度が水曜（category=weekday）なら、前年も
-    月-木のいずれか（同じ weekday カテゴリ）でのみ比較する。
+    旧ロジック（祝日/日/土/金/平日(月-木) の5カテゴリでマッチし、
+    金土日祝を必ず同カテゴリ同士で比較する方式）は廃止した。
+    例:
+      - 水曜 → 前年の（同カテゴリの月-木ではなく）前年の水曜と比較。
+      - 祝日 → 前年の祝日ではなく、同じ曜日と比較。
+    同一曜日は必ず存在するため None にはならない（前年データが無い場合は
+    呼び出し側で YoY=None として扱われる）。
     """
-    try:
-        base = d.replace(year=d.year - 1)
-    except ValueError:
-        base = d.replace(year=d.year - 1, day=28)
-
-    target_category = _day_category(d)
-
-    best: Optional[date] = None
-    best_abs = _PREV_SEARCH_RADIUS + 1
-    for diff in range(-_PREV_SEARCH_RADIUS, _PREV_SEARCH_RADIUS + 1):
-        cand = base + timedelta(days=diff)
-        if _day_category(cand) == target_category and abs(diff) < best_abs:
-            best = cand
-            best_abs = abs(diff)
-
-    return best
+    return _previous_year_same_weekday(d)
 
 
 async def _get_segments(supabase: Client, department_slug: str = "store"):
@@ -161,9 +122,9 @@ async def get_daily_sales_summary(
         DailySalesSummaryResponse相当のdict
     """
     start, end = _get_month_range(month)
-    # 前年データの取得範囲は、_previous_year_matching_date が ±4日の探索を
-    # 行うため余裕を持って ±7日 取る（フォールバックの同曜日マッチも含めて確実に
-    # マッチ候補をカバーする）。
+    # 前年比較は同一曜日マッチ（前年同日付から±3日以内に必ず同曜日が存在）。
+    # 月初・月末の同曜日が前月/翌月にまたがるケースをカバーするため余裕を持って
+    # ±7日 取得する。
     prev_start = _previous_year_same_weekday(start) - timedelta(days=7)
     prev_end = _previous_year_same_weekday(end) + timedelta(days=7)
 
@@ -506,9 +467,9 @@ async def get_daily_trend(
         DailyTrendResponse相当のdict
     """
     start, end = _get_month_range(month)
-    # 前年データの取得範囲は、_previous_year_matching_date が ±4日の探索を
-    # 行うため余裕を持って ±7日 取る（フォールバックの同曜日マッチも含めて確実に
-    # マッチ候補をカバーする）。
+    # 前年比較は同一曜日マッチ（前年同日付から±3日以内に必ず同曜日が存在）。
+    # 月初・月末の同曜日が前月/翌月にまたがるケースをカバーするため余裕を持って
+    # ±7日 取得する。
     prev_start = _previous_year_same_weekday(start) - timedelta(days=7)
     prev_end = _previous_year_same_weekday(end) + timedelta(days=7)
 
