@@ -599,6 +599,40 @@ class StoreDetailResponse(BaseModel):
 
 
 # =============================================================================
+# 店舗詳細: 宅配関連売上スキーマ
+# =============================================================================
+
+class DeliveryCategoryDetail(BaseModel):
+    """宅配関連の商品分類別データ"""
+    category: str = Field(..., description="商品分類名")
+    sales: float = Field(0, description="税込売上")
+    quantity: float = Field(0, description="件数（販売数量）")
+    sales_previous_year: float = Field(0, description="前年税込売上")
+    quantity_previous_year: float = Field(0, description="前年件数")
+    sales_yoy: Optional[float] = Field(None, description="売上前年比（%）")
+    quantity_yoy: Optional[float] = Field(None, description="件数前年比（%）")
+
+
+class ShippingRegionDetail(BaseModel):
+    """送料の発送先地域別内訳"""
+    region: str = Field(..., description="地域名")
+    count: float = Field(0, description="件数")
+    sales: float = Field(0, description="税込売上")
+    share: float = Field(0, description="件数構成比（%）")
+
+
+class StoreDeliveryResponse(BaseModel):
+    """店舗の宅配関連売上レスポンス"""
+    segment_id: str = Field(..., description="店舗ID")
+    month: str = Field(..., description="対象月（YYYY-MM-DD形式）")
+    total_sales: float = Field(0, description="宅配関連売上合計（税込）")
+    total_sales_previous_year: float = Field(0, description="前年宅配関連売上合計")
+    total_sales_yoy: Optional[float] = Field(None, description="前年比（%）")
+    categories: List[DeliveryCategoryDetail] = Field(default_factory=list, description="分類別内訳")
+    shipping_regions: List[ShippingRegionDetail] = Field(default_factory=list, description="送料の地域別件数内訳")
+
+
+# =============================================================================
 # 店舗別売上集計スキーマ
 # =============================================================================
 

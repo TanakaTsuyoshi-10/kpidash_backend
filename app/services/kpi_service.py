@@ -1343,6 +1343,140 @@ async def get_store_detail(
 
 
 # =============================================================================
+# 店舗詳細: 宅配関連売上
+# =============================================================================
+
+# 宅配関連の商品分類（product_sales.product_category_name）
+DELIVERY_CATEGORIES = [
+    "宅配ぎょうざ",
+    "宅配生姜ぎょうざ",
+    "宅配たれ・スープ",
+    "宅配梱包料",
+    "送料",
+]
+
+# 送料商品名から抽出される発送先地域（表記ゆれ正規化後）
+_SHIPPING_REGIONS = [
+    "北海道", "南北東北", "信越関東", "中部北陸", "四国関西", "九州中国", "沖縄",
+]
+
+
+def _extract_shipping_region(product_name: str) -> str:
+    """送料の商品名（例: 九州中国1148, 四国・関西2363）から地域名を抽出する"""
+    import re
+    import unicodedata
+    name = unicodedata.normalize("NFKC", product_name or "")
+    name = name.replace("・", "").replace(" ", "").replace("　", "")
+    name = re.sub(r"\d+$", "", name)
+    for region in _SHIPPING_REGIONS:
+        if name.startswith(region):
+            return region
+    return name or "その他"
+
+
+@cached(prefix="kpi", ttl=300)
+async def get_store_delivery_summary(
+    supabase: Client,
+    segment_id: str,
+    target_month: date,
+) -> Dict[str, Any]:
+    """
+    店舗の宅配関連売上サマリーを取得する
+
+    product_sales（月次・税込）から宅配関連5分類の売上・数量と前年同月比、
+    送料商品名から発送先地域別の件数内訳を返す。
+    """
+    target_month = normalize_to_month_start(target_month)
+    previous_month = get_previous_year_month(target_month)
+
+    def _fetch_month(month_start: date) -> List[Dict[str, Any]]:
+        if month_start.month == 12:
+            next_month = date(month_start.year + 1, 1, 1)
+        else:
+            next_month = date(month_start.year, month_start.month + 1, 1)
+        response = supabase.table("product_sales").select(
+            "product_name, product_category_name, quantity, sales_with_tax"
+        ).eq("segment_id", segment_id).in_(
+            "product_category_name", DELIVERY_CATEGORIES
+        ).gte("sale_date", month_start.isoformat()).lt(
+            "sale_date", next_month.isoformat()
+        ).execute()
+        return response.data or []
+
+    current_rows = _fetch_month(target_month)
+    prev_rows = _fetch_month(previous_month)
+
+    def _sum_by_category(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
+        agg: Dict[str, Dict[str, float]] = {
+            c: {"sales": 0.0, "quantity": 0.0} for c in DELIVERY_CATEGORIES
+        }
+        for row in rows:
+            cat = row["product_category_name"]
+            agg[cat]["sales"] += float(row["sales_with_tax"] or 0)
+            agg[cat]["quantity"] += float(row["quantity"] or 0)
+        return agg
+
+    current_agg = _sum_by_category(current_rows)
+    prev_agg = _sum_by_category(prev_rows)
+
+    def _yoy(cur: float, prev: float) -> Optional[float]:
+        if prev > 0:
+            return round((cur - prev) / prev * 100, 1)
+        return None
+
+    categories = []
+    for cat in DELIVERY_CATEGORIES:
+        cur = current_agg[cat]
+        prev = prev_agg[cat]
+        categories.append({
+            "category": cat,
+            "sales": round(cur["sales"]),
+            "quantity": round(cur["quantity"]),
+            "sales_previous_year": round(prev["sales"]),
+            "quantity_previous_year": round(prev["quantity"]),
+            "sales_yoy": _yoy(cur["sales"], prev["sales"]),
+            "quantity_yoy": _yoy(cur["quantity"], prev["quantity"]),
+        })
+
+    total_sales = sum(c["sales"] for c in categories)
+    total_sales_prev = sum(c["sales_previous_year"] for c in categories)
+
+    # 送料の発送先地域別 件数内訳（当月）
+    region_agg: Dict[str, Dict[str, float]] = {}
+    for row in current_rows:
+        if row["product_category_name"] != "送料":
+            continue
+        region = _extract_shipping_region(row["product_name"])
+        if region not in region_agg:
+            region_agg[region] = {"count": 0.0, "sales": 0.0}
+        region_agg[region]["count"] += float(row["quantity"] or 0)
+        region_agg[region]["sales"] += float(row["sales_with_tax"] or 0)
+
+    total_count = sum(v["count"] for v in region_agg.values())
+    shipping_regions = [
+        {
+            "region": region,
+            "count": round(v["count"]),
+            "sales": round(v["sales"]),
+            "share": round(v["count"] / total_count * 100, 1) if total_count > 0 else 0.0,
+        }
+        for region, v in region_agg.items()
+        if v["count"] > 0
+    ]
+    shipping_regions.sort(key=lambda x: x["count"], reverse=True)
+
+    return {
+        "segment_id": segment_id,
+        "month": target_month.isoformat(),
+        "total_sales": total_sales,
+        "total_sales_previous_year": total_sales_prev,
+        "total_sales_yoy": _yoy(total_sales, total_sales_prev),
+        "categories": categories,
+        "shipping_regions": shipping_regions,
+    }
+
+
+# =============================================================================
 # 店舗別売上集計取得
 # =============================================================================
 

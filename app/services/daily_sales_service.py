@@ -543,29 +543,40 @@ async def get_daily_trend(
         prev_daily[row["date"]]["customers"] += int(row["customer_count"])
 
     # 日次データ作成
+    # - previous_year は「当年の各日に対する前年同曜日マッチ日」で1日1点に整列する。
+    #   （±7日の取得パディングをそのまま出力すると、当月日数を超える系列になり
+    #   グラフが45日分描画されるバグになるため、出力は当月の日数に必ず揃える）
+    # - current_year は当日までで打ち切る（進行中の月で未来日が0円で描画され、
+    #   月末にグラフが0に落ちたように見えるのを防ぐ）
+    today = date.today()
     current_year = []
+    previous_year = []
     d = start
     while d <= end:
         dt_str = d.isoformat()
-        val = current_daily.get(dt_str, {"sales": 0.0, "customers": 0})
-        current_year.append({
-            "date": dt_str,
-            "sales": val["sales"],
-            "customers": val["customers"],
+        if d <= today:
+            val = current_daily.get(dt_str, {"sales": 0.0, "customers": 0})
+            current_year.append({
+                "date": dt_str,
+                "sales": val["sales"],
+                "customers": val["customers"],
+            })
+
+        prev_d = _previous_year_matching_date(d)
+        prev_str = prev_d.isoformat() if prev_d else None
+        pval = prev_daily.get(prev_str, {"sales": 0.0, "customers": 0}) if prev_str else {"sales": 0.0, "customers": 0}
+        previous_year.append({
+            "date": prev_str or dt_str,
+            "sales": pval["sales"],
+            "customers": pval["customers"],
         })
         d += timedelta(days=1)
 
-    previous_year = []
-    d = prev_start
-    while d <= prev_end:
-        dt_str = d.isoformat()
-        val = prev_daily.get(dt_str, {"sales": 0.0, "customers": 0})
-        previous_year.append({
-            "date": dt_str,
-            "sales": val["sales"],
-            "customers": val["customers"],
-        })
-        d += timedelta(days=1)
+    # 末尾の未取込日（売上・客数とも0）は落とす。レシートジャーナルの取込が
+    # 当日に追いついていない期間が0円で描画され、線が0に急落して見えるため。
+    # 月中の休業日などの0は残す（末尾連続分のみトリム）。
+    while current_year and current_year[-1]["sales"] == 0 and current_year[-1]["customers"] == 0:
+        current_year.pop()
 
     return {
         "period": month,
@@ -573,4 +584,352 @@ async def get_daily_trend(
         "segment_name": segment_name,
         "current_year": current_year,
         "previous_year": previous_year,
+    }
+
+
+# =============================================================================
+# API 4: 時間帯別ヒートマップ（月間合計）
+# =============================================================================
+
+@cached(prefix="daily_sales", ttl=300)
+async def get_hourly_sales_month(
+    supabase: Client,
+    month: str,
+    department_slug: str = "store",
+) -> Dict[str, Any]:
+    """
+    指定月の時間帯別×店舗の合計データを取得する（月間合計ヒートマップ用）
+
+    集計ビュー hourly_sales_agg / hourly_customers_agg（(date, segment, hour)
+    粒度）を月範囲で取得し、(hour, segment) に集約する。
+    レスポンス形式は get_hourly_sales と同じ（date には月初文字列を入れる）。
+    """
+    start, end = _get_month_range(month)
+    segments = await _get_segments(supabase, department_slug)
+    segment_ids = [s["id"] for s in segments]
+
+    if not segment_ids:
+        return {
+            "date": month,
+            "hours": [],
+            "stores": [],
+            "data": [],
+            "row_totals": [],
+            "col_totals": [],
+        }
+
+    hourly_sales_data = _fetch_all(
+        supabase.table("hourly_sales_agg").select(
+            "hour, segment_id, sales"
+        ).gte("date", start.isoformat()).lte("date", end.isoformat())
+        .in_("segment_id", segment_ids),
+        order_by="date",
+    )
+    hourly_cust_data = _fetch_all(
+        supabase.table("hourly_customers_agg").select(
+            "hour, segment_id, customer_count"
+        ).gte("date", start.isoformat()).lte("date", end.isoformat())
+        .in_("segment_id", segment_ids),
+        order_by="date",
+    )
+
+    agg: Dict[tuple, Dict[str, Any]] = defaultdict(
+        lambda: {"sales": 0.0, "customers": 0}
+    )
+    hours_set = set()
+    for row in hourly_sales_data:
+        key = (row["hour"], row["segment_id"])
+        agg[key]["sales"] += float(row["sales"])
+        hours_set.add(row["hour"])
+    for row in hourly_cust_data:
+        key = (row["hour"], row["segment_id"])
+        agg[key]["customers"] += int(row["customer_count"])
+        hours_set.add(row["hour"])
+
+    if hours_set:
+        hours = list(range(min(hours_set), max(hours_set) + 1))
+    else:
+        hours = list(range(9, 20))
+
+    stores = [
+        {"segment_id": s["id"], "segment_code": s["code"], "segment_name": s["name"]}
+        for s in segments
+    ]
+
+    data = []
+    for hour in hours:
+        for seg in segments:
+            val = agg.get((hour, seg["id"]), {"sales": 0.0, "customers": 0})
+            data.append({
+                "hour": hour,
+                "segment_id": seg["id"],
+                "sales": val["sales"],
+                "customers": val["customers"],
+            })
+
+    row_totals = []
+    for seg in segments:
+        row_totals.append({
+            "segment_id": seg["id"],
+            "sales": sum(agg.get((h, seg["id"]), {"sales": 0.0})["sales"] for h in hours),
+            "customers": sum(agg.get((h, seg["id"]), {"customers": 0})["customers"] for h in hours),
+        })
+
+    col_totals = []
+    for hour in hours:
+        col_totals.append({
+            "hour": hour,
+            "sales": sum(agg.get((hour, s["id"]), {"sales": 0.0})["sales"] for s in segments),
+            "customers": sum(agg.get((hour, s["id"]), {"customers": 0})["customers"] for s in segments),
+        })
+
+    return {
+        "date": month,
+        "hours": hours,
+        "stores": stores,
+        "data": data,
+        "row_totals": row_totals,
+        "col_totals": col_totals,
+    }
+
+
+# =============================================================================
+# API 5: 曜日別分析（平日 / 土日祝）
+# =============================================================================
+
+def _is_weekend_or_holiday(d: date) -> bool:
+    """土曜・日曜・祝日なら True"""
+    from app.services.japanese_holidays import is_japanese_holiday
+    return d.weekday() >= 5 or is_japanese_holiday(d)
+
+
+async def _collect_daily_metrics(
+    supabase: Client,
+    start: date,
+    end: date,
+    segment_ids: List[str],
+) -> Dict[str, Dict[str, float]]:
+    """期間内の日別 売上・客数・バット数 を全店合計で収集する"""
+    from app.services.order_forecast_service import (
+        BATS_DIVISOR,
+        _extract_pack_size,
+    )
+
+    sales_rows = _fetch_all(
+        supabase.table("daily_sales_by_segment").select("date, sales")
+        .gte("date", start.isoformat()).lte("date", end.isoformat())
+        .in_("segment_id", segment_ids),
+        order_by="date",
+    )
+    cust_rows = _fetch_all(
+        supabase.table("daily_customers_by_segment").select("date, customer_count")
+        .gte("date", start.isoformat()).lte("date", end.isoformat())
+        .in_("segment_id", segment_ids),
+        order_by="date",
+    )
+    qty_rows = _fetch_all(
+        supabase.table("daily_gyoza_quantity").select("date, product_name, quantity")
+        .gte("date", start.isoformat()).lte("date", end.isoformat())
+        .in_("segment_id", segment_ids),
+        order_by="date",
+    )
+
+    daily: Dict[str, Dict[str, float]] = defaultdict(
+        lambda: {"sales": 0.0, "customers": 0.0, "bats": 0.0}
+    )
+    for row in sales_rows:
+        daily[row["date"]]["sales"] += float(row["sales"])
+    for row in cust_rows:
+        daily[row["date"]]["customers"] += float(row["customer_count"])
+    for row in qty_rows:
+        pack_size = _extract_pack_size(row["product_name"])
+        if pack_size == 0:
+            continue
+        daily[row["date"]]["bats"] += float(row["quantity"]) * pack_size / BATS_DIVISOR
+
+    return daily
+
+
+def _summarize_group(
+    daily: Dict[str, Dict[str, float]],
+    dates: List[date],
+) -> Dict[str, Any]:
+    """日付グループの平均指標を計算する（データがある日のみ平均対象）"""
+    days_with_data = [
+        d for d in dates
+        if daily.get(d.isoformat(), {}).get("sales", 0.0) > 0
+    ]
+    n = len(days_with_data)
+    if n == 0:
+        return {
+            "days": 0, "avg_sales": 0.0, "avg_bats": 0.0,
+            "avg_customers": 0.0, "avg_price": 0.0,
+        }
+    total_sales = sum(daily[d.isoformat()]["sales"] for d in days_with_data)
+    total_cust = sum(daily[d.isoformat()]["customers"] for d in days_with_data)
+    total_bats = sum(daily[d.isoformat()]["bats"] for d in days_with_data)
+    return {
+        "days": n,
+        "avg_sales": round(total_sales / n, 0),
+        "avg_bats": round(total_bats / n, 1),
+        "avg_customers": round(total_cust / n, 1),
+        "avg_price": round(total_sales / total_cust, 0) if total_cust > 0 else 0.0,
+    }
+
+
+def _with_yoy(current: Dict[str, Any], previous: Dict[str, Any]) -> Dict[str, Any]:
+    """current に前年値と前年比を付与する"""
+    result = dict(current)
+    result["prev"] = previous
+    yoy = {}
+    for key in ("avg_sales", "avg_bats", "avg_customers", "avg_price"):
+        prev_val = previous.get(key) or 0
+        cur_val = current.get(key) or 0
+        yoy[key] = round(cur_val / prev_val * 100, 1) if prev_val else None
+    result["yoy"] = yoy
+    return result
+
+
+@cached(prefix="daily_sales", ttl=300)
+async def get_weekday_analysis(
+    supabase: Client,
+    month: str,
+    department_slug: str = "store",
+    segment_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    曜日別分析: 平日 / 土日祝 の平均売上・バット数・来客数・客単価と前年同月比
+
+    - 土日祝 = 土曜・日曜・日本の祝日（振替休日含む）
+    - 平均はデータがある日のみを分母にする（休業日・未取込日を除外）
+    - 前年は前年同月のカレンダーで同様に集計して比較する
+    - バット数 = ぎょうざ系商品の販売個数×パック入数 ÷ 60
+    - segment_id 指定時はその店舗のみ、未指定時は部門の全店舗合計
+    """
+    start, end = _get_month_range(month)
+    try:
+        prev_start = start.replace(year=start.year - 1)
+    except ValueError:
+        prev_start = start.replace(year=start.year - 1, day=28)
+    prev_month_str = prev_start.isoformat()
+    prev_start, prev_end = _get_month_range(prev_month_str)
+
+    if segment_id:
+        segment_ids = [segment_id]
+    else:
+        segments = await _get_segments(supabase, department_slug)
+        segment_ids = [s["id"] for s in segments]
+    if not segment_ids:
+        empty = {
+            "days": 0, "avg_sales": 0.0, "avg_bats": 0.0,
+            "avg_customers": 0.0, "avg_price": 0.0,
+            "prev": {}, "yoy": {},
+        }
+        return {"period": month, "weekday": empty, "weekend": empty}
+
+    current_daily = await _collect_daily_metrics(supabase, start, end, segment_ids)
+    prev_daily = await _collect_daily_metrics(supabase, prev_start, prev_end, segment_ids)
+
+    # 当月は当日まで（未来日を分母に入れない）
+    today = date.today()
+    cur_last = min(end, today)
+
+    def split_dates(s: date, e: date):
+        weekdays, weekends = [], []
+        d = s
+        while d <= e:
+            (weekends if _is_weekend_or_holiday(d) else weekdays).append(d)
+            d += timedelta(days=1)
+        return weekdays, weekends
+
+    cur_weekdays, cur_weekends = split_dates(start, cur_last)
+    prev_weekdays, prev_weekends = split_dates(prev_start, prev_end)
+
+    weekday_cur = _summarize_group(current_daily, cur_weekdays)
+    weekday_prev = _summarize_group(prev_daily, prev_weekdays)
+    weekend_cur = _summarize_group(current_daily, cur_weekends)
+    weekend_prev = _summarize_group(prev_daily, prev_weekends)
+
+    return {
+        "period": month,
+        "weekday": _with_yoy(weekday_cur, weekday_prev),
+        "weekend": _with_yoy(weekend_cur, weekend_prev),
+    }
+
+
+# =============================================================================
+# API 6: 店舗の日別×時間帯 来客ヒートマップ
+# =============================================================================
+
+@cached(prefix="daily_sales", ttl=300)
+async def get_store_hourly_customers(
+    supabase: Client,
+    month: str,
+    segment_id: str,
+) -> Dict[str, Any]:
+    """
+    店舗詳細ページ用: 指定月の日別×時間帯の来客数マトリクスを取得する
+
+    - 行=日付（当月1日〜月末。進行中の月は当日まで）
+    - 列=時間帯（その月にデータがある時間帯の min〜max）
+    - row_totals=日計、col_totals=時間帯別合計（最終行用）
+    """
+    start, end = _get_month_range(month)
+    today = date.today()
+    last = min(end, today)
+
+    rows = _fetch_all(
+        supabase.table("hourly_customers_agg")
+        .select("date, hour, customer_count")
+        .eq("segment_id", segment_id)
+        .gte("date", start.isoformat())
+        .lte("date", last.isoformat()),
+        order_by="date",
+    )
+
+    # (date, hour) -> customers（ビューは (date, segment, hour) 粒度で一意）
+    agg: Dict[tuple, int] = {}
+    for row in rows:
+        key = (row["date"], int(row["hour"]))
+        agg[key] = agg.get(key, 0) + int(row["customer_count"])
+
+    hour_set = sorted({h for (_, h) in agg})
+    hours = list(range(hour_set[0], hour_set[-1] + 1)) if hour_set else []
+
+    dates = []
+    d = start
+    while d <= last:
+        dates.append(d.isoformat())
+        d += timedelta(days=1)
+
+    # 末尾の未取込日（来客0）はトリムする（日次推移と同じ扱い。月中の休業日は残す）
+    dates_with_data = {dt for (dt, _) in agg}
+    while dates and dates[-1] not in dates_with_data:
+        dates.pop()
+
+    data = [
+        {"date": dt, "hour": h, "customers": c}
+        for (dt, h), c in agg.items()
+        if c > 0
+    ]
+
+    row_totals = [
+        {"date": dt, "customers": sum(agg.get((dt, h), 0) for h in hours)}
+        for dt in dates
+    ]
+    col_totals = [
+        {"hour": h, "customers": sum(agg.get((dt, h), 0) for dt in dates)}
+        for h in hours
+    ]
+    total = sum(t["customers"] for t in col_totals)
+
+    return {
+        "period": month,
+        "segment_id": segment_id,
+        "hours": hours,
+        "dates": dates,
+        "data": data,
+        "row_totals": row_totals,
+        "col_totals": col_totals,
+        "total": total,
     }

@@ -31,6 +31,7 @@ from app.schemas.kpi import (
     TargetValueBulkResponse,
     TargetMatrixResponse,
     StoreDetailResponse,
+    StoreDeliveryResponse,
 )
 from app.services.kpi_service import (
     get_department_summary,
@@ -41,6 +42,7 @@ from app.services.kpi_service import (
     get_product_matrix,
     get_product_trend,
     get_store_detail,
+    get_store_delivery_summary,
 )
 from app.services.target_service import (
     create_target_value,
@@ -470,6 +472,25 @@ async def get_store_detail_data(
         )
 
     return StoreDetailResponse(**result)
+
+
+@router.get(
+    "/store/{segment_id}/delivery",
+    response_model=StoreDeliveryResponse,
+    summary="店舗の宅配関連売上取得",
+    description="""
+    店舗の宅配関連売上（宅配ぎょうざ・宅配生姜ぎょうざ・宅配たれ・スープ・
+    宅配梱包料・送料）の内訳と前年同月比、送料の発送先地域別件数内訳を取得する。
+    """,
+)
+async def get_store_delivery_data(
+    segment_id: str,
+    month: date = Query(..., description="対象月（YYYY-MM-DD形式）"),
+    current_user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase_admin),
+) -> StoreDeliveryResponse:
+    result = await get_store_delivery_summary(supabase, segment_id, month)
+    return StoreDeliveryResponse(**result)
 
 
 # =============================================================================
