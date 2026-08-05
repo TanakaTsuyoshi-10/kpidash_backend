@@ -140,7 +140,9 @@ async def get_current_user_profile(
 
     try:
         response = supabase.table("user_profiles").select(
-            "id, email, display_name, role, is_active"
+            "id, email, display_name, role, is_active, "
+            "org_department_id, position, can_approve, approval_view_all, "
+            "org_departments(name)"
         ).eq("id", user_id).execute()
 
         if response.data and len(response.data) > 0:
@@ -153,6 +155,7 @@ async def get_current_user_profile(
             else:
                 allowed_pages = await get_user_page_permissions(supabase, user_id)
 
+            dept = user.get("org_departments") or {}
             result = CurrentUserResponse(
                 id=user["id"],
                 email=user["email"],
@@ -161,6 +164,11 @@ async def get_current_user_profile(
                 is_admin=user_role == "admin",
                 is_active=bool(user.get("is_active", True)),
                 allowed_pages=allowed_pages,
+                org_department_id=user.get("org_department_id"),
+                org_department_name=dept.get("name") if isinstance(dept, dict) else None,
+                position=user.get("position"),
+                can_approve=bool(user.get("can_approve", False)),
+                approval_view_all=bool(user.get("approval_view_all", False)),
             )
             cache.set(cache_key, result, ttl=300)
             return result
@@ -186,7 +194,9 @@ async def get_user_list(supabase: Client) -> UserListResponse:
     try:
         # user_profilesと権限名を結合して取得
         response = supabase.table("user_profiles").select(
-            "id, email, display_name, role, is_active, created_at, updated_at"
+            "id, email, display_name, role, is_active, created_at, updated_at, "
+            "org_department_id, position, can_approve, approval_view_all, "
+            "org_departments(name)"
         ).order("created_at", desc=True).execute()
 
         # 権限名を取得
@@ -195,6 +205,7 @@ async def get_user_list(supabase: Client) -> UserListResponse:
 
         users = []
         for user in response.data or []:
+            dept = user.get("org_departments") or {}
             users.append(UserProfileResponse(
                 id=user["id"],
                 email=user["email"],
@@ -202,6 +213,11 @@ async def get_user_list(supabase: Client) -> UserListResponse:
                 role=user["role"],
                 role_name=role_map.get(user["role"], user["role"]),
                 is_active=user.get("is_active", True),
+                org_department_id=user.get("org_department_id"),
+                org_department_name=dept.get("name") if isinstance(dept, dict) else None,
+                position=user.get("position"),
+                can_approve=bool(user.get("can_approve", False)),
+                approval_view_all=bool(user.get("approval_view_all", False)),
                 created_at=user.get("created_at"),
                 updated_at=user.get("updated_at"),
                 last_sign_in_at=None,  # auth.usersからは取得しない（RLS制限）
@@ -232,7 +248,9 @@ async def get_user_profile(
     """
     try:
         response = supabase.table("user_profiles").select(
-            "id, email, display_name, role, is_active, created_at, updated_at"
+            "id, email, display_name, role, is_active, created_at, updated_at, "
+            "org_department_id, position, can_approve, approval_view_all, "
+            "org_departments(name)"
         ).eq("id", user_id).execute()
 
         if not response.data:
@@ -246,6 +264,7 @@ async def get_user_profile(
         ).execute()
         role_name = role_response.data[0]["name"] if role_response.data else user["role"]
 
+        dept = user.get("org_departments") or {}
         return UserProfileResponse(
             id=user["id"],
             email=user["email"],
@@ -253,6 +272,11 @@ async def get_user_profile(
             role=user["role"],
             role_name=role_name,
             is_active=user.get("is_active", True),
+            org_department_id=user.get("org_department_id"),
+            org_department_name=dept.get("name") if isinstance(dept, dict) else None,
+            position=user.get("position"),
+            can_approve=bool(user.get("can_approve", False)),
+            approval_view_all=bool(user.get("approval_view_all", False)),
             created_at=user.get("created_at"),
             updated_at=user.get("updated_at"),
             last_sign_in_at=None,
@@ -312,6 +336,10 @@ async def create_user(
             "display_name": data.display_name or data.email.split("@")[0],
             "role": data.role.value,
             "is_active": True,
+            "org_department_id": data.org_department_id or None,
+            "position": data.position,
+            "can_approve": data.can_approve,
+            "approval_view_all": data.approval_view_all,
             "created_by": admin_user_id,
             "updated_by": admin_user_id,
         }).execute()
@@ -371,6 +399,19 @@ async def update_user(
 
         if data.is_active is not None:
             update_data["is_active"] = data.is_active
+
+        # 部署は "" でクリア（未設定に戻す）
+        if data.org_department_id is not None:
+            update_data["org_department_id"] = data.org_department_id or None
+
+        if data.position is not None:
+            update_data["position"] = data.position
+
+        if data.can_approve is not None:
+            update_data["can_approve"] = data.can_approve
+
+        if data.approval_view_all is not None:
+            update_data["approval_view_all"] = data.approval_view_all
 
         # プロファイルを更新
         response = supabase.table("user_profiles").update(update_data).eq(
@@ -554,3 +595,82 @@ async def deactivate_user(
             message=f"ユーザーの無効化に失敗しました: {str(e)}",
             user_id=None,
         )
+
+
+# =============================================================================
+# 部署マスタ（承認ワークフローの閲覧スコープ用）
+# =============================================================================
+
+async def list_org_departments(
+    supabase: Client,
+    include_inactive: bool = False,
+) -> "OrgDepartmentListResponse":
+    """部署一覧を取得する"""
+    from app.schemas.user import OrgDepartment, OrgDepartmentListResponse
+
+    query = supabase.table("org_departments").select("*")
+    if not include_inactive:
+        query = query.eq("is_active", True)
+    res = query.order("display_order").order("name").execute()
+    departments = [
+        OrgDepartment(
+            id=str(r["id"]),
+            name=r["name"],
+            display_order=r.get("display_order", 0),
+            is_active=r.get("is_active", True),
+        )
+        for r in (res.data or [])
+    ]
+    return OrgDepartmentListResponse(departments=departments)
+
+
+async def create_org_department(supabase: Client, name: str, display_order: int = 0):
+    """部署を作成する（管理者用）"""
+    from app.schemas.user import OrgDepartment
+
+    res = supabase.table("org_departments").insert({
+        "name": name,
+        "display_order": display_order,
+    }).execute()
+    if not res.data:
+        return None
+    r = res.data[0]
+    return OrgDepartment(
+        id=str(r["id"]),
+        name=r["name"],
+        display_order=r.get("display_order", 0),
+        is_active=r.get("is_active", True),
+    )
+
+
+async def update_org_department(
+    supabase: Client,
+    department_id: str,
+    name=None,
+    display_order=None,
+    is_active=None,
+):
+    """部署を更新する（管理者用）"""
+    from app.schemas.user import OrgDepartment
+
+    update_data = {}
+    if name is not None:
+        update_data["name"] = name
+    if display_order is not None:
+        update_data["display_order"] = display_order
+    if is_active is not None:
+        update_data["is_active"] = is_active
+    if not update_data:
+        return None
+    res = supabase.table("org_departments").update(update_data).eq(
+        "id", department_id
+    ).execute()
+    if not res.data:
+        return None
+    r = res.data[0]
+    return OrgDepartment(
+        id=str(r["id"]),
+        name=r["name"],
+        display_order=r.get("display_order", 0),
+        is_active=r.get("is_active", True),
+    )

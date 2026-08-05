@@ -185,26 +185,60 @@ def _actionable_steps(steps: List[Dict[str, Any]], mode: str, current_step_no: i
 # =============================================================================
 
 async def list_assignable_users(supabase: Client) -> List[Dict[str, str]]:
-    """承認者として指定可能なユーザーの軽量一覧（有効ユーザーのみ）"""
+    """承認者として指定可能なユーザーの軽量一覧
+
+    承認権限（user_profiles.can_approve）を持つ有効ユーザーのみ返す。
+    部署・役職も添えて選択UIで判別しやすくする。
+    """
     try:
         res = (
             supabase.table("user_profiles")
-            .select("id, email, display_name, is_active")
+            .select("id, email, display_name, is_active, position, org_departments(name)")
             .eq("is_active", True)
+            .eq("can_approve", True)
             .order("display_name")
             .execute()
         )
-        return [
-            {
+        result = []
+        for r in (res.data or []):
+            dept = r.get("org_departments") or {}
+            dept_name = dept.get("name") if isinstance(dept, dict) else None
+            label_parts = [p for p in (dept_name, r.get("position")) if p]
+            result.append({
                 "id": str(r["id"]),
                 "email": r.get("email") or "",
-                "display_name": _display_name(r),
-            }
-            for r in (res.data or [])
-        ]
+                "display_name": _display_name(r) + (f"（{'・'.join(label_parts)}）" if label_parts else ""),
+            })
+        return result
     except Exception as exc:
         logger.warning("承認者候補の取得に失敗: %s", exc)
         return []
+
+
+async def _get_viewer_context(supabase: Client, user_id: str) -> Dict[str, Any]:
+    """稟議の閲覧スコープ判定に使うユーザー属性を取得する
+
+    - role admin/executive または approval_view_all=true → 全社閲覧
+    - それ以外 → 自部署（org_department_id）の稟議のみ
+    """
+    try:
+        res = (
+            supabase.table("user_profiles")
+            .select("role, org_department_id, approval_view_all")
+            .eq("id", user_id)
+            .execute()
+        )
+        row = (res.data or [{}])[0]
+        role = row.get("role") or "user"
+        view_all = role in ("admin", "executive") or bool(row.get("approval_view_all"))
+        return {
+            "role": role,
+            "view_all": view_all,
+            "org_department_id": row.get("org_department_id"),
+        }
+    except Exception as exc:
+        logger.warning("閲覧コンテキストの取得に失敗: %s", exc)
+        return {"role": "user", "view_all": False, "org_department_id": None}
 
 
 # =============================================================================
@@ -283,6 +317,8 @@ async def create_draft(
     user_email: str,
 ) -> Optional[ApprovalRequestDetail]:
     """下書きを作成する"""
+    # 申請者の部署をスタンプ（閲覧スコープ判定に使用）
+    requester_ctx = await _get_viewer_context(supabase, user_id)
     record = {
         "request_type": data.request_type,
         "title": data.title or "(無題)",
@@ -292,6 +328,7 @@ async def create_draft(
         "metadata": data.metadata,
         "requester_id": user_id,
         "requester_email": user_email,
+        "org_department_id": requester_ctx["org_department_id"],
     }
     res = supabase.table("approval_requests").insert(record).execute()
     if not res.data:
@@ -363,7 +400,9 @@ async def list_requests(
     tab:
         todo : 自分にアクションが回ってきている申請
         mine : 自分が起票した申請
-        all  : 全件（admin/executive のみ）
+        all  : 閲覧範囲内の申請
+               （admin/executive/全社閲覧権限者 → 全件、
+                それ以外 → 自部署の申請＋自分が起票した申請）
     """
     # 自分が pending assignee の request_id 集合
     my_steps_res = (
@@ -386,13 +425,21 @@ async def list_requests(
             .is_("soft_deleted_at", "null")
         )
     elif tab == "all":
-        if not is_admin_or_executive:
-            return ApprovalRequestListResponse(requests=[], total=0)
+        viewer = await _get_viewer_context(supabase, user_id)
         query = (
             supabase.table("approval_requests")
             .select("*")
             .is_("soft_deleted_at", "null")
         )
+        if not viewer["view_all"]:
+            # 自部署の申請＋自分が起票した申請のみ（部署未設定なら自分の分のみ）
+            dept_id = viewer["org_department_id"]
+            if dept_id:
+                query = query.or_(
+                    f"org_department_id.eq.{dept_id},requester_id.eq.{user_id}"
+                )
+            else:
+                query = query.eq("requester_id", user_id)
     else:  # mine
         query = (
             supabase.table("approval_requests")
@@ -439,11 +486,38 @@ async def get_request(
     request_id: str,
     user_id: str,
 ) -> Optional[ApprovalRequestDetail]:
-    """詳細取得（ステップ・監査履歴込み）"""
+    """詳細取得（ステップ・監査履歴込み）
+
+    閲覧できるのは以下のいずれか:
+    - 申請者本人 / 承認ライン上の担当者
+    - admin・executive・稟議全社閲覧権限を持つユーザー
+    - 申請者と同じ部署のユーザー
+    それ以外には None（=404）を返し存在も秘匿する。
+    """
     res = supabase.table("approval_requests").select("*").eq("id", request_id).execute()
     if not res.data:
         return None
     row = res.data[0]
+
+    # 閲覧権限チェック
+    if str(row.get("requester_id")) != user_id:
+        assignee_res = (
+            supabase.table("approval_steps")
+            .select("id")
+            .eq("request_id", request_id)
+            .eq("assignee_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        is_assignee = bool(assignee_res.data)
+        if not is_assignee:
+            viewer = await _get_viewer_context(supabase, user_id)
+            same_dept = (
+                viewer["org_department_id"] is not None
+                and str(row.get("org_department_id") or "") == str(viewer["org_department_id"])
+            )
+            if not viewer["view_all"] and not same_dept:
+                return None
 
     steps_res = (
         supabase.table("approval_steps")
@@ -529,7 +603,8 @@ async def submit_request(
 
     is_resubmit = bool(row.get("submitted_at"))
 
-    # 内容を確定
+    # 内容を確定（部署は申請時点の申請者の所属で最新化する）
+    requester_ctx = await _get_viewer_context(supabase, user_id)
     supabase.table("approval_requests").update({
         "title": data.title,
         "content": data.content,
@@ -537,6 +612,7 @@ async def submit_request(
         "approval_mode": data.approval_mode,
         "status": "pending",
         "current_step_no": 1,
+        "org_department_id": requester_ctx["org_department_id"],
         "submitted_at": _now_iso(),
         "rejected_at": None,
     }).eq("id", request_id).execute()

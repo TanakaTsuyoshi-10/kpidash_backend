@@ -58,6 +58,10 @@ class UserProfileCreate(BaseModel):
     password: str = Field(..., description="パスワード", min_length=8)
     display_name: Optional[str] = Field(None, description="表示名", max_length=100)
     role: UserRole = Field(default=UserRole.USER, description="権限")
+    org_department_id: Optional[str] = Field(None, description="部署ID")
+    position: Optional[str] = Field(None, description="役職", max_length=100)
+    can_approve: bool = Field(default=False, description="承認権限（承認者に指定可能か）")
+    approval_view_all: bool = Field(default=False, description="稟議の全社閲覧権限")
 
     @field_validator("email")
     @classmethod
@@ -70,10 +74,17 @@ class UserProfileCreate(BaseModel):
 
 
 class UserProfileUpdate(BaseModel):
-    """ユーザー情報更新"""
+    """ユーザー情報更新
+
+    org_department_id は空文字 "" を渡すと部署未設定にクリアされる。
+    """
     display_name: Optional[str] = Field(None, description="表示名", max_length=100)
     role: Optional[UserRole] = Field(None, description="権限")
     is_active: Optional[bool] = Field(None, description="有効フラグ")
+    org_department_id: Optional[str] = Field(None, description="部署ID（\"\"でクリア）")
+    position: Optional[str] = Field(None, description="役職", max_length=100)
+    can_approve: Optional[bool] = Field(None, description="承認権限")
+    approval_view_all: Optional[bool] = Field(None, description="稟議の全社閲覧権限")
 
 
 class UserProfileResponse(BaseModel):
@@ -84,6 +95,11 @@ class UserProfileResponse(BaseModel):
     role: str = Field(..., description="権限")
     role_name: Optional[str] = Field(None, description="権限名")
     is_active: bool = Field(default=True, description="有効フラグ")
+    org_department_id: Optional[str] = Field(None, description="部署ID")
+    org_department_name: Optional[str] = Field(None, description="部署名")
+    position: Optional[str] = Field(None, description="役職")
+    can_approve: bool = Field(default=False, description="承認権限")
+    approval_view_all: bool = Field(default=False, description="稟議の全社閲覧権限")
     created_at: Optional[datetime] = Field(None, description="作成日時")
     updated_at: Optional[datetime] = Field(None, description="更新日時")
     last_sign_in_at: Optional[datetime] = Field(None, description="最終ログイン日時")
@@ -135,6 +151,11 @@ class CurrentUserResponse(BaseModel):
     is_admin: bool = Field(default=False, description="管理者フラグ")
     is_active: bool = Field(default=True, description="アカウント有効フラグ")
     allowed_pages: List[str] = Field(default_factory=list, description="閲覧許可ページ一覧")
+    org_department_id: Optional[str] = Field(None, description="部署ID")
+    org_department_name: Optional[str] = Field(None, description="部署名")
+    position: Optional[str] = Field(None, description="役職")
+    can_approve: bool = Field(default=False, description="承認権限")
+    approval_view_all: bool = Field(default=False, description="稟議の全社閲覧権限")
 
 
 # =============================================================================
@@ -150,3 +171,33 @@ class UserPagePermissionsResponse(BaseModel):
     """ページ権限レスポンス"""
     user_id: str = Field(..., description="ユーザーID")
     allowed_pages: List[str] = Field(default_factory=list, description="閲覧許可ページ一覧")
+
+
+# =============================================================================
+# 部署マスタスキーマ
+# =============================================================================
+
+class OrgDepartment(BaseModel):
+    """部署"""
+    id: str = Field(..., description="部署ID")
+    name: str = Field(..., description="部署名")
+    display_order: int = Field(default=0, description="表示順")
+    is_active: bool = Field(default=True, description="有効フラグ")
+
+
+class OrgDepartmentCreate(BaseModel):
+    """部署作成"""
+    name: str = Field(..., description="部署名", min_length=1, max_length=100)
+    display_order: int = Field(default=0, description="表示順")
+
+
+class OrgDepartmentUpdate(BaseModel):
+    """部署更新"""
+    name: Optional[str] = Field(None, description="部署名", min_length=1, max_length=100)
+    display_order: Optional[int] = Field(None, description="表示順")
+    is_active: Optional[bool] = Field(None, description="有効フラグ")
+
+
+class OrgDepartmentListResponse(BaseModel):
+    """部署一覧レスポンス"""
+    departments: List[OrgDepartment] = Field(default_factory=list, description="部署一覧")

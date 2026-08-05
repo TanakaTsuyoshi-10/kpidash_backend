@@ -8,6 +8,10 @@ from supabase import Client
 
 from app.api.deps import get_current_user, get_supabase_client, get_supabase_admin
 from app.schemas.user import (
+    OrgDepartment,
+    OrgDepartmentCreate,
+    OrgDepartmentListResponse,
+    OrgDepartmentUpdate,
     UserProfileCreate,
     UserProfileUpdate,
     UserProfileResponse,
@@ -112,6 +116,85 @@ async def get_users(
     """ユーザー一覧を取得する（管理者用）。"""
     try:
         return await user_service.get_user_list(supabase)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# 部署マスタ（承認ワークフローの閲覧スコープ用）
+# =============================================================================
+
+@router.get(
+    "/org-departments",
+    response_model=OrgDepartmentListResponse,
+    summary="部署一覧取得",
+    description="部署マスタの一覧を取得する。承認者選択・利用者管理で使用。",
+)
+async def list_org_departments(
+    include_inactive: bool = False,
+    current_user = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase_admin),
+):
+    """部署一覧を取得する（認証ユーザー）。"""
+    try:
+        return await user_service.list_org_departments(supabase, include_inactive)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/org-departments",
+    response_model=OrgDepartment,
+    summary="部署作成",
+    description="部署を新規作成する。管理者権限が必要。",
+)
+async def create_org_department(
+    data: OrgDepartmentCreate,
+    current_user = Depends(require_admin),
+    supabase: Client = Depends(get_supabase_admin),
+):
+    """部署を作成する（管理者用）。"""
+    try:
+        result = await user_service.create_org_department(
+            supabase, data.name, data.display_order
+        )
+        if not result:
+            raise HTTPException(status_code=500, detail="部署の作成に失敗しました")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        msg = str(e)
+        if "duplicate" in msg.lower() or "unique" in msg.lower():
+            raise HTTPException(status_code=400, detail="同名の部署が既に存在します")
+        raise HTTPException(status_code=500, detail=msg)
+
+
+@router.put(
+    "/org-departments/{department_id}",
+    response_model=OrgDepartment,
+    summary="部署更新",
+    description="部署名・表示順・有効フラグを更新する。管理者権限が必要。",
+)
+async def update_org_department(
+    department_id: str,
+    data: OrgDepartmentUpdate,
+    current_user = Depends(require_admin),
+    supabase: Client = Depends(get_supabase_admin),
+):
+    """部署を更新する（管理者用）。"""
+    try:
+        result = await user_service.update_org_department(
+            supabase, department_id,
+            name=data.name,
+            display_order=data.display_order,
+            is_active=data.is_active,
+        )
+        if not result:
+            raise HTTPException(status_code=404, detail="部署が見つかりません")
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
