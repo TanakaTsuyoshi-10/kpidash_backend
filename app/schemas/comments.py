@@ -23,6 +23,10 @@ class SaveCommentRequest(BaseModel):
         ...,
         description="コメント内容"
     )
+    segment_id: Optional[str] = Field(
+        None,
+        description="店舗ID（店舗詳細ページのコメント時のみ。部門レベルはNULL）"
+    )
 
 
 class UpdateCommentRequest(BaseModel):
@@ -39,6 +43,7 @@ class MonthlyComment(BaseModel):
     category: str = Field(..., description="カテゴリ")
     period: str = Field(..., description="対象月")
     comment: str = Field(..., description="コメント内容")
+    segment_id: Optional[str] = Field(None, description="店舗ID（部門レベルはNULL）")
     created_by: Optional[str] = Field(None, description="作成者ユーザーID")
     created_by_email: Optional[str] = Field(None, description="作成者メールアドレス")
     updated_by: Optional[str] = Field(None, description="最終編集者ユーザーID")

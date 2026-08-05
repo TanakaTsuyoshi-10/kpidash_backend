@@ -55,6 +55,7 @@ VALID_CATEGORIES = ["store", "ecommerce", "finance", "manufacturing", "regional"
 async def get_monthly_comments(
     category: str,
     period: str = Query(..., description="対象月（YYYY-MM-01形式）"),
+    segment_id: str | None = Query(None, description="店舗ID（指定時はその店舗のコメント、未指定時は部門レベルのみ）"),
     current_user: User = Depends(get_current_user),
     supabase: Client = Depends(get_supabase_admin),
 ) -> MonthlyCommentsResponse:
@@ -66,10 +67,16 @@ async def get_monthly_comments(
         )
 
     try:
-        response = supabase.table("monthly_comments").select(
-            "id, category, period, comment, created_by, created_by_email, "
+        query = supabase.table("monthly_comments").select(
+            "id, category, period, comment, segment_id, created_by, created_by_email, "
             "updated_by, updated_by_email, created_at, updated_at"
-        ).eq("category", category).eq("period", period).order("created_at").execute()
+        ).eq("category", category).eq("period", period)
+        # 店舗コメントと部門レベルコメントを分離する
+        if segment_id:
+            query = query.eq("segment_id", segment_id)
+        else:
+            query = query.is_("segment_id", "null")
+        response = query.order("created_at").execute()
 
         comments = []
         for row in (response.data or []):
@@ -78,6 +85,7 @@ async def get_monthly_comments(
                 category=row["category"],
                 period=row["period"],
                 comment=row["comment"],
+                segment_id=row.get("segment_id"),
                 created_by=row.get("created_by"),
                 created_by_email=row.get("created_by_email"),
                 updated_by=row.get("updated_by"),
@@ -129,6 +137,7 @@ async def add_monthly_comment(
             "category": data.category,
             "period": data.period,
             "comment": data.comment,
+            "segment_id": data.segment_id,
             "created_by": current_user.user_id,
             "created_by_email": current_user.email,
         }
@@ -141,6 +150,7 @@ async def add_monthly_comment(
                 category=row["category"],
                 period=row["period"],
                 comment=row["comment"],
+                segment_id=row.get("segment_id"),
                 created_by=row.get("created_by"),
                 created_by_email=row.get("created_by_email"),
                 updated_by=row.get("updated_by"),
@@ -219,6 +229,7 @@ async def update_monthly_comment(
                 category=row["category"],
                 period=row["period"],
                 comment=row["comment"],
+                segment_id=row.get("segment_id"),
                 created_by=row.get("created_by"),
                 created_by_email=row.get("created_by_email"),
                 updated_by=row.get("updated_by"),
