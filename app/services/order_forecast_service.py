@@ -80,7 +80,11 @@ def _fetch_gyoza_sales(
     end_date: date,
     segment_ids: List[str],
 ) -> list:
-    """ぎょうざ系商品の販売データを取得する"""
+    """ぎょうざ系商品の販売データを取得する（時間帯付き・単日など短期間用）
+
+    生の hourly_sales はぎょうざ系だけで月1.7万行を超え、月単位で引くと
+    statement timeout になる。月単位の集計には _fetch_gyoza_daily を使うこと。
+    """
     rows = _fetch_all(
         supabase.table("hourly_sales")
         .select("date, hour, segment_id, product_name, product_group, quantity")
@@ -90,6 +94,57 @@ def _fetch_gyoza_sales(
         .in_("product_group", list(TARGET_PRODUCT_GROUPS))
     )
     return rows
+
+
+def _fetch_gyoza_daily(
+    supabase: Client,
+    start_date: date,
+    end_date: date,
+    segment_ids: List[str],
+) -> list:
+    """ぎょうざ系商品の日次集計を取得する（daily_gyoza_quantity ビュー）
+
+    (date, segment_id, product_name) 粒度。生テーブル比で行数が約1/5になり、
+    ページネーション回数と DB 負荷を大幅に減らす。
+    """
+    return _fetch_all(
+        supabase.table("daily_gyoza_quantity")
+        .select("date, segment_id, product_name, quantity")
+        .gte("date", start_date.isoformat())
+        .lte("date", end_date.isoformat())
+        .in_("segment_id", segment_ids),
+        order_by="date",
+    )
+
+
+@cached(prefix="order_forecast_month_rows", ttl=600)
+async def _get_month_gyoza_rows(
+    supabase: Client,
+    year: int,
+    month: int,
+    department_slug: str = "store",
+) -> Dict[str, Any]:
+    """指定月のぎょうざ系日次集計行とセグメント一覧を返す（月単位キャッシュ）
+
+    予測・カレンダー・日別テーブルが同じ月を別々に取得して DB 負荷が
+    4重になっていたため、月単位で共有キャッシュする。日付ナビゲーションで
+    対象日が変わっても同月ならキャッシュにヒットする。
+    """
+    start = date(year, month, 1)
+    if month == 12:
+        end = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        end = date(year, month + 1, 1) - timedelta(days=1)
+
+    segments = await _get_segments(supabase, department_slug)
+    segment_ids = [s["id"] for s in segments]
+    if not segment_ids:
+        return {"segments": [], "rows": []}
+
+    rows = await asyncio.to_thread(
+        _fetch_gyoza_daily, supabase, start, end, segment_ids
+    )
+    return {"segments": segments, "rows": rows}
 
 
 def _calc_daily_bats(
@@ -111,7 +166,8 @@ def _calc_daily_bats(
         pack_size = _extract_pack_size(row["product_name"])
         if pack_size == 0:
             continue
-        qty = int(row["quantity"])
+        # ビューの SUM(quantity) は数値文字列で返ることがある
+        qty = float(row["quantity"])
         pieces = qty * pack_size
         key = (row["date"], row["segment_id"])
         agg[key] += pieces
@@ -158,13 +214,6 @@ async def get_order_forecast(
     target_date = date.fromisoformat(target_date_str)
     target_weekday = WEEKDAY_NAMES[target_date.weekday()]
 
-    # セグメント取得
-    segments = await _get_segments(supabase, department_slug)
-    segment_ids = [s["id"] for s in segments]
-
-    if not segment_ids:
-        return _empty_response(target_date_str, target_weekday)
-
     # 前年・前々年の同月範囲を計算
     prev_year = target_date.year - 1
     two_years_ago = target_date.year - 2
@@ -185,15 +234,20 @@ async def get_order_forecast(
     # region_name解決を先行開始（sales fetchと並列化）
     region_name_task = asyncio.create_task(resolve_region_name(supabase, segment_id))
 
-    # データ取得（並列実行）
-    prev_rows, two_yr_rows = await asyncio.gather(
-        asyncio.to_thread(_fetch_gyoza_sales, supabase, prev_month_start, prev_month_end, segment_ids),
-        asyncio.to_thread(_fetch_gyoza_sales, supabase, two_yr_month_start, two_yr_month_end, segment_ids),
+    # データ取得（月単位キャッシュ・並列実行）
+    prev_month_data, two_yr_month_data = await asyncio.gather(
+        _get_month_gyoza_rows(supabase, prev_month_start.year, prev_month_start.month, department_slug),
+        _get_month_gyoza_rows(supabase, two_yr_month_start.year, two_yr_month_start.month, department_slug),
     )
 
+    segments = prev_month_data["segments"] or two_yr_month_data["segments"]
+    if not segments:
+        region_name_task.cancel()
+        return _empty_response(target_date_str, target_weekday)
+
     # バット数計算
-    prev_daily = _calc_daily_bats(prev_rows, segments)
-    two_yr_daily = _calc_daily_bats(two_yr_rows, segments)
+    prev_daily = _calc_daily_bats(prev_month_data["rows"], segments)
+    two_yr_daily = _calc_daily_bats(two_yr_month_data["rows"], segments)
 
     # 同曜日の参照日
     prev_same_weekday = _find_same_weekday(target_date, prev_year)
@@ -353,23 +407,21 @@ async def get_daily_product_breakdown(
     else:
         end = date(year, month + 1, 1) - timedelta(days=1)
 
-    segments = await _get_segments(supabase, department_slug)
-    segment_ids = [s["id"] for s in segments]
-    if not segment_ids:
+    # 月単位キャッシュから取得（予測・カレンダーと同じデータを共有）
+    month_data = await _get_month_gyoza_rows(supabase, year, month, department_slug)
+    if not month_data["segments"]:
         return {"year": year, "month": month, "product_columns": PRODUCT_COLUMNS, "rows": []}
-
-    rows = _fetch_gyoza_sales(supabase, start, end, segment_ids)
 
     # 日付×商品名別集計
     # key: (date, normalized_product_name) -> quantity合計
     agg: Dict[tuple, int] = defaultdict(int)
-    for row in rows:
+    for row in month_data["rows"]:
         if segment_id and row["segment_id"] != segment_id:
             continue
         norm_name = _normalize_product_name(row["product_name"])
         if norm_name not in PRODUCT_COLUMNS:
             continue
-        agg[(row["date"], norm_name)] += int(row["quantity"])
+        agg[(row["date"], norm_name)] += int(float(row["quantity"]))
 
     # 日付リスト
     result_rows = []

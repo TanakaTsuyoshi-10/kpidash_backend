@@ -796,6 +796,7 @@ async def get_store_pl_by_segment_id(
     segment_id: str,
     period: date,
     is_target: bool = False,
+    period_type: str = "monthly",
 ) -> Optional[StorePL]:
     """
     特定店舗の収支を取得する
@@ -805,6 +806,7 @@ async def get_store_pl_by_segment_id(
         segment_id: 店舗ID
         period: 対象月
         is_target: 目標フラグ
+        period_type: "monthly"（単月）| "cumulative"（年度累計 = 9月〜対象月）
 
     Returns:
         StorePL or None
@@ -820,12 +822,19 @@ async def get_store_pl_by_segment_id(
 
         segment = seg_response.data[0]
 
-        # 店舗別収支データを取得
+        # 集計範囲（累計モードは年度開始9月〜対象月）
+        is_cumulative = period_type == "cumulative"
+        fy_start_year = period.year if period.month >= 9 else period.year - 1
+        start = date(fy_start_year, 9, 1) if is_cumulative else period
+        prev_start = date(start.year - 1, start.month, 1)
+        prev_period = date(period.year - 1, period.month, 1)
+
+        # 店舗別収支データを取得（単月時は start=period の1ヶ月分）
         pl_response = supabase.table("store_pl").select(
             "*, store_pl_sga_details(*)"
-        ).eq("segment_id", segment_id).eq(
-            "period", period.isoformat()
-        ).eq("is_target", is_target).execute()
+        ).eq("segment_id", segment_id).gte(
+            "period", start.isoformat()
+        ).lte("period", period.isoformat()).eq("is_target", is_target).execute()
 
         if not pl_response.data:
             return StorePL(
@@ -835,32 +844,41 @@ async def get_store_pl_by_segment_id(
                 period=period,
             )
 
-        pl_data = pl_response.data[0]
-
         # 前年データを取得
-        prev_period = date(period.year - 1, period.month, 1)
         prev_response = supabase.table("store_pl").select("*").eq(
             "segment_id", segment_id
-        ).eq("period", prev_period.isoformat()).eq("is_target", is_target).execute()
+        ).gte("period", prev_start.isoformat()).lte(
+            "period", prev_period.isoformat()
+        ).eq("is_target", is_target).execute()
 
-        prev_data = prev_response.data[0] if prev_response.data else None
+        def _sum_field(rows: List[Dict[str, Any]], field: str) -> Optional[Decimal]:
+            vals = [_to_decimal(r.get(field)) for r in rows]
+            vals = [v for v in vals if v is not None]
+            return sum(vals, Decimal("0")) if vals else None
 
-        # データ変換
-        sales = _to_decimal(pl_data.get("sales")) or Decimal("0")
-        cost = _to_decimal(pl_data.get("cost_of_sales")) or Decimal("0")
-        gross = _to_decimal(pl_data.get("gross_profit")) or (sales - cost)
-        sga = _to_decimal(pl_data.get("sga_total")) or Decimal("0")
-        op = _to_decimal(pl_data.get("operating_profit")) or (gross - sga)
+        rows = pl_response.data
 
-        # 販管費明細
+        # データ変換（期間内の合算。単月時は1行のみ）
+        sales = _sum_field(rows, "sales") or Decimal("0")
+        cost = _sum_field(rows, "cost_of_sales") or Decimal("0")
+        gross = _sum_field(rows, "gross_profit") or (sales - cost)
+        sga = _sum_field(rows, "sga_total") or Decimal("0")
+        op = _sum_field(rows, "operating_profit") or (gross - sga)
+
+        # 販管費明細（期間内の合算）
         sga_detail = None
-        sga_details_list = pl_data.get("store_pl_sga_details", [])
-        if sga_details_list:
-            sd = sga_details_list[0] if isinstance(sga_details_list, list) else sga_details_list
-            personnel = _to_decimal(sd.get("personnel_cost")) or Decimal("0")
-            land_rent = _to_decimal(sd.get("land_rent")) or Decimal("0")
-            lease = _to_decimal(sd.get("lease_cost")) or Decimal("0")
-            utilities = _to_decimal(sd.get("utilities")) or Decimal("0")
+        detail_rows: List[Dict[str, Any]] = []
+        for r in rows:
+            dl = r.get("store_pl_sga_details", [])
+            if isinstance(dl, list):
+                detail_rows.extend(dl)
+            elif dl:
+                detail_rows.append(dl)
+        if detail_rows:
+            personnel = _sum_field(detail_rows, "personnel_cost") or Decimal("0")
+            land_rent = _sum_field(detail_rows, "land_rent") or Decimal("0")
+            lease = _sum_field(detail_rows, "lease_cost") or Decimal("0")
+            utilities = _sum_field(detail_rows, "utilities") or Decimal("0")
             detail_total = personnel + land_rent + lease + utilities
             others = sga - detail_total if sga > detail_total else Decimal("0")
 
@@ -872,9 +890,20 @@ async def get_store_pl_by_segment_id(
                 others=others,
             )
 
-        # 前年比
-        prev_sales = _to_decimal(prev_data.get("sales")) if prev_data else None
-        prev_op = _to_decimal(prev_data.get("operating_profit")) if prev_data else None
+        # 前年比（累計時は当期にデータがある月と同じ月だけで前年を合算し、
+        # 取込済み月数の差で前年比が大きく歪むのを防ぐ）
+        prev_rows = prev_response.data or []
+        if is_cumulative:
+            current_months = {r["period"][:7] for r in rows}
+            def _plus_one_year(ym: str) -> str:
+                y, m = ym.split("-")
+                return f"{int(y) + 1:04d}-{m}"
+            prev_rows = [
+                r for r in prev_rows
+                if _plus_one_year(r["period"][:7]) in current_months
+            ]
+        prev_sales = _sum_field(prev_rows, "sales")
+        prev_op = _sum_field(prev_rows, "operating_profit")
         sales_yoy = _calculate_yoy_rate(sales, prev_sales)
         op_yoy = _calculate_yoy_rate(op, prev_op)
 

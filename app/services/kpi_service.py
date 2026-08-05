@@ -1128,7 +1128,8 @@ async def get_product_trend(
 async def get_store_detail(
     supabase: Client,
     segment_id: str,
-    target_month: date
+    target_month: date,
+    period_type: str = "monthly",
 ) -> Dict[str, Any]:
     """
     店舗の詳細データを取得する
@@ -1139,12 +1140,18 @@ async def get_store_detail(
         supabase: Supabaseクライアント
         segment_id: 店舗ID
         target_month: 対象月
+        period_type: "monthly"（単月）| "cumulative"（年度累計 = 9月〜対象月）
 
     Returns:
         dict: 店舗詳細データ
     """
     target_month = normalize_to_month_start(target_month)
     previous_month = get_previous_year_month(target_month)
+
+    # 累計モード: 年度開始（9月）〜対象月の範囲で集計する
+    is_cumulative = period_type == "cumulative"
+    fiscal_start, _ = get_fiscal_year_range(get_fiscal_year(target_month))
+    prev_fiscal_start = date(fiscal_start.year - 1, fiscal_start.month, 1)
 
     # 店舗情報を取得
     segment_response = supabase.table("segments").select(
@@ -1177,20 +1184,26 @@ async def get_store_detail(
     product_kpi_ids = [k["id"] for k in product_kpis]
     all_kpi_ids = product_kpi_ids + list(overall_kpis.values())
 
-    current_values_response = supabase.table("kpi_values").select(
-        "kpi_id, value"
-    ).eq("segment_id", segment_id).in_(
-        "kpi_id", all_kpi_ids
-    ).eq("date", target_month.isoformat()).eq("is_target", False).execute()
-    current_values = {v["kpi_id"]: float(v["value"]) for v in current_values_response.data}
+    def _fetch_values(start: date, end: date) -> Dict[str, float]:
+        """期間内の kpi_values を kpi_id ごとに合算して返す（単月時は start=end）"""
+        response = supabase.table("kpi_values").select(
+            "kpi_id, value"
+        ).eq("segment_id", segment_id).in_(
+            "kpi_id", all_kpi_ids
+        ).gte("date", start.isoformat()).lte(
+            "date", end.isoformat()
+        ).eq("is_target", False).execute()
+        values: Dict[str, float] = {}
+        for v in response.data:
+            values[v["kpi_id"]] = values.get(v["kpi_id"], 0.0) + float(v["value"])
+        return values
 
-    # 前年同月のデータを取得
-    prev_values_response = supabase.table("kpi_values").select(
-        "kpi_id, value"
-    ).eq("segment_id", segment_id).in_(
-        "kpi_id", all_kpi_ids
-    ).eq("date", previous_month.isoformat()).eq("is_target", False).execute()
-    prev_values = {v["kpi_id"]: float(v["value"]) for v in prev_values_response.data}
+    if is_cumulative:
+        current_values = _fetch_values(fiscal_start, target_month)
+        prev_values = _fetch_values(prev_fiscal_start, previous_month)
+    else:
+        current_values = _fetch_values(target_month, target_month)
+        prev_values = _fetch_values(previous_month, previous_month)
 
     # 全体サマリーを計算
     sales_kpi_id = overall_kpis.get("売上高")
@@ -1260,18 +1273,22 @@ async def get_store_detail(
         else:
             prev_next_month = date(previous_month.year, previous_month.month + 1, 1)
 
-        # 当月の個別商品データを取得
+        # 集計範囲（累計モードは年度開始〜対象月）
+        items_start = fiscal_start if is_cumulative else target_month
+        prev_items_start = prev_fiscal_start if is_cumulative else previous_month
+
+        # 当月（または累計）の個別商品データを取得
         current_items_response = supabase.table("product_sales").select(
             "product_code, product_name, product_category_name, quantity, sales_with_tax"
         ).eq("segment_id", segment_id).gte(
-            "sale_date", target_month.isoformat()
+            "sale_date", items_start.isoformat()
         ).lt("sale_date", next_month.isoformat()).execute()
 
-        # 前年同月の個別商品データを取得
+        # 前年同期間の個別商品データを取得
         prev_items_response = supabase.table("product_sales").select(
             "product_code, product_name, product_category_name, quantity, sales_with_tax"
         ).eq("segment_id", segment_id).gte(
-            "sale_date", previous_month.isoformat()
+            "sale_date", prev_items_start.isoformat()
         ).lt("sale_date", prev_next_month.isoformat()).execute()
 
         # 当月データを商品コード別に集計
@@ -1379,32 +1396,43 @@ async def get_store_delivery_summary(
     supabase: Client,
     segment_id: str,
     target_month: date,
+    period_type: str = "monthly",
 ) -> Dict[str, Any]:
     """
     店舗の宅配関連売上サマリーを取得する
 
-    product_sales（月次・税込）から宅配関連5分類の売上・数量と前年同月比、
+    product_sales（月次・税込）から宅配関連5分類の売上・数量と前年同期比、
     送料商品名から発送先地域別の件数内訳を返す。
+    period_type="cumulative" で年度累計（9月〜対象月）。
     """
     target_month = normalize_to_month_start(target_month)
     previous_month = get_previous_year_month(target_month)
 
-    def _fetch_month(month_start: date) -> List[Dict[str, Any]]:
-        if month_start.month == 12:
-            next_month = date(month_start.year + 1, 1, 1)
+    is_cumulative = period_type == "cumulative"
+    fiscal_start, _ = get_fiscal_year_range(get_fiscal_year(target_month))
+    prev_fiscal_start = date(fiscal_start.year - 1, fiscal_start.month, 1)
+
+    def _fetch_range(start: date, last_month: date) -> List[Dict[str, Any]]:
+        """start 月初〜last_month の月末までの product_sales を取得"""
+        if last_month.month == 12:
+            next_month = date(last_month.year + 1, 1, 1)
         else:
-            next_month = date(month_start.year, month_start.month + 1, 1)
+            next_month = date(last_month.year, last_month.month + 1, 1)
         response = supabase.table("product_sales").select(
             "product_name, product_category_name, quantity, sales_with_tax"
         ).eq("segment_id", segment_id).in_(
             "product_category_name", DELIVERY_CATEGORIES
-        ).gte("sale_date", month_start.isoformat()).lt(
+        ).gte("sale_date", start.isoformat()).lt(
             "sale_date", next_month.isoformat()
         ).execute()
         return response.data or []
 
-    current_rows = _fetch_month(target_month)
-    prev_rows = _fetch_month(previous_month)
+    if is_cumulative:
+        current_rows = _fetch_range(fiscal_start, target_month)
+        prev_rows = _fetch_range(prev_fiscal_start, previous_month)
+    else:
+        current_rows = _fetch_range(target_month, target_month)
+        prev_rows = _fetch_range(previous_month, previous_month)
 
     def _sum_by_category(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
         agg: Dict[str, Dict[str, float]] = {

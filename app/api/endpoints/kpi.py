@@ -450,6 +450,7 @@ async def get_alert_list(
 async def get_store_detail_data(
     segment_id: str,
     month: date = Query(..., description="対象月（YYYY-MM-DD形式）"),
+    period_type: str = Query("monthly", description="期間タイプ（monthly: 単月, cumulative: 年度累計）"),
     current_user: User = Depends(get_current_user),
     supabase: Client = Depends(get_supabase_admin),
 ) -> StoreDetailResponse:
@@ -463,7 +464,7 @@ async def get_store_detail_data(
     Returns:
         StoreDetailResponse: 店舗詳細データ
     """
-    result = await get_store_detail(supabase, segment_id, month)
+    result = await get_store_detail(supabase, segment_id, month, period_type)
 
     if not result:
         raise HTTPException(
@@ -486,10 +487,11 @@ async def get_store_detail_data(
 async def get_store_delivery_data(
     segment_id: str,
     month: date = Query(..., description="対象月（YYYY-MM-DD形式）"),
+    period_type: str = Query("monthly", description="期間タイプ（monthly: 単月, cumulative: 年度累計）"),
     current_user: User = Depends(get_current_user),
     supabase: Client = Depends(get_supabase_admin),
 ) -> StoreDeliveryResponse:
-    result = await get_store_delivery_summary(supabase, segment_id, month)
+    result = await get_store_delivery_summary(supabase, segment_id, month, period_type)
     return StoreDeliveryResponse(**result)
 
 

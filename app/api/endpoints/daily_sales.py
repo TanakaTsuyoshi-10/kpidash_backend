@@ -99,10 +99,11 @@ async def weekday_analysis(
     month: str = Query(..., description="対象年月 (YYYY-MM-01)", pattern=r"^\d{4}-\d{2}-01$"),
     department_slug: str = Query("store", description="部門スラッグ"),
     segment_id: str | None = Query(None, description="店舗ID（指定時はその店舗のみ）"),
+    period_type: str = Query("monthly", description="期間タイプ（monthly: 単月, cumulative: 年度累計）"),
     current_user: User = Depends(get_current_user),
     supabase: Client = Depends(get_supabase_admin),
 ):
-    return await get_weekday_analysis(supabase, month, department_slug, segment_id)
+    return await get_weekday_analysis(supabase, month, department_slug, segment_id, period_type)
 
 
 @router.get(
@@ -118,10 +119,11 @@ async def weekday_analysis(
 async def store_hourly_customers(
     month: str = Query(..., description="対象年月 (YYYY-MM-01)", pattern=r"^\d{4}-\d{2}-01$"),
     segment_id: str = Query(..., description="店舗ID"),
+    period_type: str = Query("monthly", description="期間タイプ（monthly: 単月, cumulative: 年度累計）"),
     current_user: User = Depends(get_current_user),
     supabase: Client = Depends(get_supabase_admin),
 ):
-    return await get_store_hourly_customers(supabase, month, segment_id)
+    return await get_store_hourly_customers(supabase, month, segment_id, period_type)
 
 
 @router.get(

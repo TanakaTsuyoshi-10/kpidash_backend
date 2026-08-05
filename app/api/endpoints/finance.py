@@ -158,6 +158,7 @@ async def store_pl_list(
 async def store_pl_detail(
     segment_id: str,
     month: date = Query(..., description="対象月（YYYY-MM-01形式）"),
+    period_type: str = Query("monthly", description="期間タイプ（monthly: 単月, cumulative: 年度累計）"),
     current_user: User = Depends(get_current_user),
     supabase: Client = Depends(get_supabase_admin),
 ) -> StorePL:
@@ -176,6 +177,7 @@ async def store_pl_detail(
             supabase=supabase,
             segment_id=segment_id,
             period=month,
+            period_type=period_type,
         )
         if result is None:
             raise HTTPException(

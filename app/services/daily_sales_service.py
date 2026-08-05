@@ -796,23 +796,31 @@ async def get_weekday_analysis(
     month: str,
     department_slug: str = "store",
     segment_id: Optional[str] = None,
+    period_type: str = "monthly",
 ) -> Dict[str, Any]:
     """
-    曜日別分析: 平日 / 土日祝 の平均売上・バット数・来客数・客単価と前年同月比
+    曜日別分析: 平日 / 土日祝 の平均売上・バット数・来客数・客単価と前年同期比
 
     - 土日祝 = 土曜・日曜・日本の祝日（振替休日含む）
     - 平均はデータがある日のみを分母にする（休業日・未取込日を除外）
-    - 前年は前年同月のカレンダーで同様に集計して比較する
+    - 前年は前年同期間のカレンダーで同様に集計して比較する
     - バット数 = ぎょうざ系商品の販売個数×パック入数 ÷ 60
     - segment_id 指定時はその店舗のみ、未指定時は部門の全店舗合計
+    - period_type="cumulative" で年度累計（9月〜対象月）の日次平均
     """
     start, end = _get_month_range(month)
+    if period_type == "cumulative":
+        # 年度開始（9月）〜対象月末の範囲で平均を取る
+        fy_start_year = start.year if start.month >= 9 else start.year - 1
+        start = date(fy_start_year, 9, 1)
     try:
         prev_start = start.replace(year=start.year - 1)
     except ValueError:
         prev_start = start.replace(year=start.year - 1, day=28)
-    prev_month_str = prev_start.isoformat()
-    prev_start, prev_end = _get_month_range(prev_month_str)
+    try:
+        prev_end = end.replace(year=end.year - 1)
+    except ValueError:
+        prev_end = end.replace(year=end.year - 1, day=28)
 
     if segment_id:
         segment_ids = [segment_id]
@@ -866,15 +874,21 @@ async def get_store_hourly_customers(
     supabase: Client,
     month: str,
     segment_id: str,
+    period_type: str = "monthly",
 ) -> Dict[str, Any]:
     """
-    店舗詳細ページ用: 指定月の日別×時間帯の来客数マトリクスを取得する
+    店舗詳細ページ用: 日別×時間帯の来客数マトリクスを取得する
 
-    - 行=日付（当月1日〜月末。進行中の月は当日まで）
-    - 列=時間帯（その月にデータがある時間帯の min〜max）
-    - row_totals=日計、col_totals=時間帯別合計（最終行用）
+    - 単月: 行=日付（当月1日〜月末。進行中の月は当日まで）
+    - 累計: 行=月（年度開始9月〜対象月。月×時間帯で合算）
+    - 列=時間帯（期間内にデータがある時間帯の min〜max）
+    - row_totals=日計（累計時は月計）、col_totals=時間帯別合計（最終行用）
     """
     start, end = _get_month_range(month)
+    is_cumulative = period_type == "cumulative"
+    if is_cumulative:
+        fy_start_year = start.year if start.month >= 9 else start.year - 1
+        start = date(fy_start_year, 9, 1)
     today = date.today()
     last = min(end, today)
 
@@ -887,10 +901,12 @@ async def get_store_hourly_customers(
         order_by="date",
     )
 
-    # (date, hour) -> customers（ビューは (date, segment, hour) 粒度で一意）
+    # (date, hour) -> customers。累計時は日付を月初に丸めて月単位に合算する
+    # （ビューは (date, segment, hour) 粒度で一意）
     agg: Dict[tuple, int] = {}
     for row in rows:
-        key = (row["date"], int(row["hour"]))
+        dt = f"{row['date'][:7]}-01" if is_cumulative else row["date"]
+        key = (dt, int(row["hour"]))
         agg[key] = agg.get(key, 0) + int(row["customer_count"])
 
     hour_set = sorted({h for (_, h) in agg})
@@ -900,12 +916,19 @@ async def get_store_hourly_customers(
     d = start
     while d <= last:
         dates.append(d.isoformat())
-        d += timedelta(days=1)
+        if is_cumulative:
+            d = date(d.year + 1, 1, 1) if d.month == 12 else date(d.year, d.month + 1, 1)
+        else:
+            d += timedelta(days=1)
 
-    # 末尾の未取込日（来客0）はトリムする（日次推移と同じ扱い。月中の休業日は残す）
+    # 末尾の未取込日（来客0）はトリムする（日次推移と同じ扱い。期間中の休業日は残す）
     dates_with_data = {dt for (dt, _) in agg}
     while dates and dates[-1] not in dates_with_data:
         dates.pop()
+    # 累計時はレシートジャーナル取込前の先頭の空月もトリムする
+    if is_cumulative:
+        while dates and dates[0] not in dates_with_data:
+            dates.pop(0)
 
     data = [
         {"date": dt, "hour": h, "customers": c}
