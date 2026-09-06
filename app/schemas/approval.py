@@ -170,6 +170,11 @@ class ApprovalActionRequest(BaseModel):
     comment: Optional[str] = Field(None, description="コメント")
 
 
+class ApprovalTransferRequest(BaseModel):
+    """起票担当者の変更"""
+    new_requester_id: str = Field(..., description="新しい起票担当者のユーザーID")
+
+
 class ApprovalReassignRequest(BaseModel):
     """承認者差替（admin/executive のみ）"""
     step_id: str = Field(..., description="対象ステップID")

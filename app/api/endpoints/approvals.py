@@ -20,6 +20,7 @@ from app.api.deps import (
 )
 from app.schemas.approval import (
     ApprovalActionRequest,
+    ApprovalTransferRequest,
     ApprovalDashboardResponse,
     PurgeAttachmentsResult,
     ApprovalReassignRequest,
@@ -184,6 +185,49 @@ async def delete_request(
     )
     if err:
         raise HTTPException(status_code=403, detail=err)
+
+
+@router.post(
+    "/{request_id}/transfer",
+    response_model=ApprovalRequestDetail,
+    summary="起票担当者を変更する（下書きの引き継ぎ）",
+)
+async def transfer_request(
+    request_id: UUID,
+    data: ApprovalTransferRequest,
+    current_user=Depends(require_approvals),
+    supabase: Client = Depends(get_supabase_admin),
+):
+    role = get_user_app_role(current_user.user_id)
+    err = await approval_service.transfer_requester(
+        supabase, str(request_id), data.new_requester_id,
+        current_user.user_id, current_user.email or "", role,
+    )
+    if err:
+        raise HTTPException(status_code=403, detail=err)
+    result = await approval_service.get_request(supabase, str(request_id), current_user.user_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="案件が見つかりません")
+    return result
+
+
+@router.post(
+    "/{request_id}/duplicate",
+    response_model=ApprovalRequestDetail,
+    status_code=status.HTTP_201_CREATED,
+    summary="稟議を複製して自分の下書きを作成する",
+)
+async def duplicate_request(
+    request_id: UUID,
+    current_user=Depends(require_approvals),
+    supabase: Client = Depends(get_supabase_admin),
+):
+    result = await approval_service.duplicate_request(
+        supabase, str(request_id), current_user.user_id, current_user.email or ""
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="案件が見つからないか、複製権限がありません")
+    return result
 
 
 # =============================================================================

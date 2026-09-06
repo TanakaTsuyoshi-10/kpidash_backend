@@ -1528,3 +1528,152 @@ async def purge_old_attachments(
         purged_requests=purged_requests,
         deleted_files=deleted_files,
     )
+
+
+# =============================================================================
+# 起票担当者の変更（編集途中の引き継ぎ）
+# =============================================================================
+
+async def transfer_requester(
+    supabase: Client,
+    request_id: str,
+    new_requester_id: str,
+    actor_id: str,
+    actor_email: str,
+    actor_role: str,
+) -> Optional[str]:
+    """下書き（差戻し済み含む）の起票担当者を変更する
+
+    - 現在の起票者本人、または admin/executive が実行可能
+    - draft 状態のみ（承認進行中・完了後の案件は担当変更不可）
+    戻り値: None=成功, それ以外はエラーメッセージ
+    """
+    res = supabase.table("approval_requests").select(
+        "id, requester_id, requester_email, status, title, soft_deleted_at"
+    ).eq("id", request_id).execute()
+    if not res.data:
+        return "案件が見つかりません"
+    row = res.data[0]
+    if row.get("soft_deleted_at"):
+        return "削除済みの案件です"
+    if row["status"] != "draft":
+        return "担当者を変更できるのは下書き（差戻し済み含む）の案件のみです"
+
+    is_privileged = actor_role in ("admin", "executive")
+    if str(row["requester_id"]) != actor_id and not is_privileged:
+        return "担当者を変更できるのは現在の担当者本人か上席のみです"
+
+    profiles = _get_profiles(supabase, [new_requester_id])
+    new_profile = profiles.get(str(new_requester_id))
+    if not new_profile:
+        return "変更先のユーザーが見つかりません"
+
+    supabase.table("approval_requests").update({
+        "requester_id": new_requester_id,
+        "requester_email": new_profile.get("email"),
+    }).eq("id", request_id).execute()
+
+    _record_action(
+        supabase, request_id, actor_id, actor_email, "transfer_requester",
+        before_state={"requester_id": str(row["requester_id"]), "requester_email": row.get("requester_email")},
+        after_state={"requester_id": str(new_requester_id), "requester_email": new_profile.get("email")},
+        comment=f"起票担当者を {_display_name(new_profile)} に変更",
+    )
+    return None
+
+
+# =============================================================================
+# 稟議の複製
+# =============================================================================
+
+async def duplicate_request(
+    supabase: Client,
+    request_id: str,
+    user_id: str,
+    user_email: str,
+) -> Optional[ApprovalRequestDetail]:
+    """既存の稟議（過去の案件・作成途中の下書きいずれも）を複製して
+    自分の新しい下書きを作成する
+
+    - 複製できるのはその案件を閲覧できるユーザー
+    - 本文・種別・承認ルート・閲覧者・Slack投稿先を引き継ぐ
+    - 添付画像は Storage 上でコピーし、元案件の保存期限切れの影響を受けない
+    """
+    source = await get_request(supabase, request_id, user_id)
+    if source is None:
+        return None  # 存在しない or 閲覧権限なし
+
+    content = dict(source.content or {})
+    metadata = dict(source.metadata or {})
+
+    # 添付画像を複製（元が期限切れで消えても複製側が壊れないように）
+    caption_html = content.get("caption_html") or ""
+    new_attachments = []
+    for att in (content.get("attachments") or []):
+        old_path = att.get("path")
+        old_url = att.get("url")
+        if not old_path:
+            continue
+        ext = old_path.rsplit(".", 1)[-1] if "." in old_path else "png"
+        new_path = f"uploads/{uuid_module.uuid4()}.{ext}"
+        try:
+            supabase.storage.from_(ATTACHMENTS_BUCKET).copy(old_path, new_path)
+            new_url = supabase.storage.from_(ATTACHMENTS_BUCKET).get_public_url(new_path).rstrip("?")
+            new_attachments.append({**att, "path": new_path, "url": new_url})
+            if old_url:
+                caption_html = caption_html.replace(old_url, new_url)
+        except Exception as exc:
+            logger.warning("複製時の添付コピー失敗 %s: %s", old_path, exc)
+            # コピー失敗時は元URLのまま引き継ぐ
+            new_attachments.append(att)
+
+    content["caption_html"] = caption_html
+    content["attachments"] = new_attachments
+    # パージ済みフラグは複製には引き継がない
+    metadata.pop("attachments_purged_at", None)
+    metadata.pop("purged_file_count", None)
+
+    requester_ctx = await _get_viewer_context(supabase, user_id)
+    record = {
+        "request_type": source.request_type,
+        "title": f"{source.title}（複製）",
+        "status": "draft",
+        "approval_mode": source.approval_mode,
+        "content": content,
+        "metadata": metadata,
+        "requester_id": user_id,
+        "requester_email": user_email,
+        "org_department_id": requester_ctx["org_department_id"],
+    }
+    res = supabase.table("approval_requests").insert(record).execute()
+    if not res.data:
+        return None
+    new_id = str(res.data[0]["id"])
+
+    # 承認ルートを引き継ぐ
+    if source.steps:
+        approvers = [
+            ApproverInput(step_no=st.step_no, assignee_id=st.assignee_id)
+            for st in sorted(source.steps, key=lambda x: (x.step_no,))
+        ]
+        # 同一 step_no × 承認者の重複（差替履歴等）を除去
+        seen = set()
+        unique_approvers = []
+        for a in approvers:
+            key = (a.step_no, a.assignee_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_approvers.append(a)
+        await _replace_steps(supabase, new_id, unique_approvers)
+
+    # 閲覧者を引き継ぐ
+    if source.viewers:
+        await _replace_viewers(supabase, new_id, [v.viewer_id for v in source.viewers])
+
+    _record_action(
+        supabase, new_id, user_id, user_email, "duplicate",
+        after_state={"source_request_id": request_id},
+        comment=f"「{source.title}」から複製",
+    )
+    return await get_request(supabase, new_id, user_id)
