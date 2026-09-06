@@ -7,7 +7,9 @@
 """
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+import os
+
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile, status
 from supabase import Client
 
 from app.api.deps import (
@@ -18,6 +20,8 @@ from app.api.deps import (
 )
 from app.schemas.approval import (
     ApprovalActionRequest,
+    ApprovalDashboardResponse,
+    PurgeAttachmentsResult,
     ApprovalReassignRequest,
     ApprovalRequestCreate,
     ApprovalRequestDetail,
@@ -31,6 +35,27 @@ from app.services import approval_service
 router = APIRouter()
 
 require_approvals = require_page_permission("approvals")
+
+
+async def get_current_user_or_maintenance_key(
+    x_maintenance_key: str | None = Header(None),
+    authorization: str | None = Header(None, description="Bearer token"),
+):
+    """管理者ユーザー、または MAINTENANCE_KEY ヘッダで認証する
+
+    Cloud Scheduler 等の定期実行から呼べるように、環境変数 MAINTENANCE_KEY と
+    一致する X-Maintenance-Key ヘッダを持つリクエストも許可する。
+    """
+    key = os.environ.get("MAINTENANCE_KEY")
+    if key and x_maintenance_key == key:
+        return None  # メンテナンスキーで許可
+
+    from app.api.deps import get_current_user as _get_current_user
+
+    user = await _get_current_user(authorization)
+    if get_user_app_role(user.user_id) != "admin":
+        raise HTTPException(status_code=403, detail="管理者権限が必要です")
+    return user
 
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024  # 10MB
 
@@ -80,6 +105,85 @@ async def assignable_users(
     supabase: Client = Depends(get_supabase_admin),
 ):
     return await approval_service.list_assignable_users(supabase)
+
+
+@router.get(
+    "/viewer-candidates",
+    summary="閲覧者候補一覧（承認権限不要・有効ユーザー全員）",
+)
+async def viewer_candidates(
+    current_user=Depends(require_approvals),
+    supabase: Client = Depends(get_supabase_admin),
+):
+    return await approval_service.list_viewer_candidates(supabase)
+
+
+@router.get(
+    "/dashboard",
+    response_model=ApprovalDashboardResponse,
+    summary="承認ワークフローダッシュボード（部署別×フェーズ別の件数と案件一覧）",
+)
+async def approval_dashboard(
+    current_user=Depends(require_approvals),
+    supabase: Client = Depends(get_supabase_admin),
+):
+    return await approval_service.get_dashboard(supabase, current_user.user_id)
+
+
+@router.post(
+    "/maintenance/purge-attachments",
+    response_model=PurgeAttachmentsResult,
+    summary="保存期間を過ぎた添付画像を削除する（管理者またはメンテナンスキー）",
+)
+async def purge_attachments(
+    dry_run: bool = Query(False, description="true の場合は削除せず対象件数のみ返す"),
+    retention_days: int | None = Query(None, ge=7, description="保存日数（省略時は環境変数 ATTACHMENT_RETENTION_DAYS、既定90日）"),
+    x_maintenance_key: str | None = Header(None),
+    current_user=Depends(get_current_user_or_maintenance_key),
+    supabase: Client = Depends(get_supabase_admin),
+):
+    days = retention_days or int(os.environ.get("ATTACHMENT_RETENTION_DAYS", "90"))
+    return await approval_service.purge_old_attachments(supabase, days, dry_run)
+
+
+# =============================================================================
+# 閲覧者の確認（押印）・削除
+# =============================================================================
+
+@router.post(
+    "/{request_id}/acknowledge",
+    summary="閲覧者の確認（押印）を記録する",
+)
+async def acknowledge_request(
+    request_id: UUID,
+    current_user=Depends(require_approvals),
+    supabase: Client = Depends(get_supabase_admin),
+):
+    ok = await approval_service.acknowledge_request(
+        supabase, str(request_id), current_user.user_id, current_user.email or ""
+    )
+    if not ok:
+        raise HTTPException(status_code=403, detail="この案件の閲覧者に指定されていません")
+    result = await approval_service.get_request(supabase, str(request_id), current_user.user_id)
+    return result
+
+
+@router.delete(
+    "/{request_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="案件を削除する（起票者本人、または上席=admin/executive）",
+)
+async def delete_request(
+    request_id: UUID,
+    current_user=Depends(require_approvals),
+    supabase: Client = Depends(get_supabase_admin),
+):
+    role = get_user_app_role(current_user.user_id)
+    err = await approval_service.delete_request(
+        supabase, str(request_id), current_user.user_id, current_user.email or "", role
+    )
+    if err:
+        raise HTTPException(status_code=403, detail=err)
 
 
 # =============================================================================

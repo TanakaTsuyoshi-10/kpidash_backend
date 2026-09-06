@@ -17,12 +17,17 @@
 """
 import logging
 import uuid as uuid_module
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from supabase import Client
 
 from app.schemas.approval import (
+    ApprovalDashboardDeptRow,
+    ApprovalDashboardRequestRow,
+    ApprovalDashboardResponse,
+    ApprovalViewer,
+    PurgeAttachmentsResult,
     ApprovalAction,
     ApprovalDelegate,
     ApprovalDelegateCreate,
@@ -184,32 +189,48 @@ def _actionable_steps(steps: List[Dict[str, Any]], mode: str, current_step_no: i
 # 承認者候補（軽量ユーザー一覧）
 # =============================================================================
 
+def _build_user_candidates(rows: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """候補ユーザー行を部署ごとにグループ表示しやすい形に整形する
+
+    - display_name: 名前（役職）
+    - department: 部署名（未設定は「部署未設定」として末尾）
+    - 並び順: 部署の表示順 → 部署名 → 名前
+    """
+    result = []
+    for r in rows:
+        dept = r.get("org_departments") or {}
+        dept_name = dept.get("name") if isinstance(dept, dict) else None
+        dept_order = dept.get("display_order") if isinstance(dept, dict) else None
+        position = r.get("position")
+        result.append({
+            "id": str(r["id"]),
+            "email": r.get("email") or "",
+            "display_name": _display_name(r) + (f"（{position}）" if position else ""),
+            "department": dept_name or "部署未設定",
+            "_order": dept_order if dept_order is not None else 99999,
+        })
+    result.sort(key=lambda x: (x["_order"], x["department"], x["display_name"]))
+    for r in result:
+        r.pop("_order", None)
+    return result
+
+
 async def list_assignable_users(supabase: Client) -> List[Dict[str, str]]:
     """承認者として指定可能なユーザーの軽量一覧
 
     承認権限（user_profiles.can_approve）を持つ有効ユーザーのみ返す。
-    部署・役職も添えて選択UIで判別しやすくする。
+    部署ごとにグループ表示できるよう department を添え、部署順で返す。
     """
     try:
         res = (
             supabase.table("user_profiles")
-            .select("id, email, display_name, is_active, position, org_departments(name)")
+            .select("id, email, display_name, is_active, position, org_departments(name, display_order)")
             .eq("is_active", True)
             .eq("can_approve", True)
             .order("display_name")
             .execute()
         )
-        result = []
-        for r in (res.data or []):
-            dept = r.get("org_departments") or {}
-            dept_name = dept.get("name") if isinstance(dept, dict) else None
-            label_parts = [p for p in (dept_name, r.get("position")) if p]
-            result.append({
-                "id": str(r["id"]),
-                "email": r.get("email") or "",
-                "display_name": _display_name(r) + (f"（{'・'.join(label_parts)}）" if label_parts else ""),
-            })
-        return result
+        return _build_user_candidates(res.data or [])
     except Exception as exc:
         logger.warning("承認者候補の取得に失敗: %s", exc)
         return []
@@ -339,6 +360,10 @@ async def create_draft(
     if data.approvers:
         await _replace_steps(supabase, request_id, data.approvers)
 
+    # 閲覧者
+    if data.viewers:
+        await _replace_viewers(supabase, request_id, data.viewers)
+
     return await get_request(supabase, request_id, user_id)
 
 
@@ -365,6 +390,9 @@ async def update_draft(
 
     if data.approvers is not None:
         await _replace_steps(supabase, request_id, data.approvers)
+
+    if data.viewers is not None:
+        await _replace_viewers(supabase, request_id, data.viewers)
 
     return await get_request(supabase, request_id, user_id)
 
@@ -414,14 +442,25 @@ async def list_requests(
     )
     my_pending_ids = {str(s["request_id"]) for s in (my_steps_res.data or [])}
 
+    # 閲覧者として未確認（未押印）の案件
+    my_ack_res = (
+        supabase.table("approval_viewers")
+        .select("request_id")
+        .eq("viewer_id", user_id)
+        .is_("acknowledged_at", "null")
+        .execute()
+    )
+    my_unacked_ids = {str(v["request_id"]) for v in (my_ack_res.data or [])}
+
     if tab == "todo":
-        if not my_pending_ids:
+        todo_ids = my_pending_ids | my_unacked_ids
+        if not todo_ids:
             return ApprovalRequestListResponse(requests=[], total=0)
         query = (
             supabase.table("approval_requests")
             .select("*")
-            .in_("id", list(my_pending_ids))
-            .eq("status", "pending")
+            .in_("id", list(todo_ids))
+            .neq("status", "draft")
             .is_("soft_deleted_at", "null")
         )
     elif tab == "all":
@@ -452,6 +491,7 @@ async def list_requests(
     rows = res.data or []
 
     # sequential の場合、自分の step 番号が current でないものは todo から除く
+    # （閲覧者として未確認の案件は承認順に関係なく残す）
     if tab == "todo" and rows:
         step_rows = (
             supabase.table("approval_steps")
@@ -463,8 +503,15 @@ async def list_requests(
         my_step_no = {str(s["request_id"]): s["step_no"] for s in step_rows}
         rows = [
             r for r in rows
-            if r["approval_mode"] != "sequential"
-            or my_step_no.get(str(r["id"])) == (r.get("current_step_no") or 1)
+            if str(r["id"]) in my_unacked_ids
+            or (
+                str(r["id"]) in my_pending_ids
+                and r["status"] == "pending"
+                and (
+                    r["approval_mode"] != "sequential"
+                    or my_step_no.get(str(r["id"])) == (r.get("current_step_no") or 1)
+                )
+            )
         ]
 
     types = await list_request_types(supabase, include_inactive=True)
@@ -473,6 +520,114 @@ async def list_requests(
 
     summaries = [_row_to_summary(r, type_labels, profiles, my_pending_ids) for r in rows]
     return ApprovalRequestListResponse(requests=summaries, total=len(summaries))
+
+
+async def _replace_viewers(
+    supabase: Client,
+    request_id: str,
+    viewer_ids: List[str],
+) -> None:
+    """閲覧者を指定リストに揃える（既存の押印済みレコードは保持する）"""
+    try:
+        existing = (
+            supabase.table("approval_viewers")
+            .select("id, viewer_id")
+            .eq("request_id", request_id)
+            .execute()
+        ).data or []
+        existing_ids = {str(v["viewer_id"]) for v in existing}
+        target_ids = {str(v) for v in viewer_ids if v}
+
+        removed = existing_ids - target_ids
+        if removed:
+            supabase.table("approval_viewers").delete().eq(
+                "request_id", request_id
+            ).in_("viewer_id", list(removed)).execute()
+
+        added = target_ids - existing_ids
+        if added:
+            profiles = _get_profiles(supabase, list(added))
+            supabase.table("approval_viewers").insert([
+                {
+                    "request_id": request_id,
+                    "viewer_id": vid,
+                    "viewer_email": (profiles.get(vid) or {}).get("email"),
+                }
+                for vid in added
+            ]).execute()
+    except Exception as exc:
+        logger.warning("閲覧者の更新に失敗: %s", exc)
+
+
+async def acknowledge_request(
+    supabase: Client,
+    request_id: str,
+    user_id: str,
+    user_email: str,
+) -> bool:
+    """閲覧者の確認（押印）を記録する"""
+    res = (
+        supabase.table("approval_viewers")
+        .select("id, acknowledged_at")
+        .eq("request_id", request_id)
+        .eq("viewer_id", user_id)
+        .execute()
+    )
+    if not res.data:
+        return False
+    row = res.data[0]
+    if row.get("acknowledged_at"):
+        return True  # 既に押印済み
+    supabase.table("approval_viewers").update(
+        {"acknowledged_at": _now_iso()}
+    ).eq("id", row["id"]).execute()
+    _record_action(
+        supabase, request_id, user_id, user_email, "viewer_ack",
+        after_state={"acknowledged": True},
+        comment="閲覧者として内容を確認",
+    )
+    return True
+
+
+async def delete_request(
+    supabase: Client,
+    request_id: str,
+    user_id: str,
+    user_email: str,
+    role: str,
+) -> Optional[str]:
+    """案件を削除（ソフトデリート）する
+
+    - 起票者本人: 自分の案件（承認進行中 pending を除く）を削除可能
+    - admin / executive（上席）: 他人の案件も削除可能（pending含む）
+    戻り値: None=成功, それ以外はエラーメッセージ
+    """
+    res = supabase.table("approval_requests").select(
+        "id, requester_id, status, title, soft_deleted_at"
+    ).eq("id", request_id).execute()
+    if not res.data:
+        return "案件が見つかりません"
+    row = res.data[0]
+    if row.get("soft_deleted_at"):
+        return None  # 既に削除済み
+
+    is_privileged = role in ("admin", "executive")
+    is_requester = str(row["requester_id"]) == user_id
+    if not is_privileged:
+        if not is_requester:
+            return "他のユーザーの案件は削除できません"
+        if row["status"] == "pending":
+            return "承認進行中の案件は削除できません（先に取下げてください）"
+
+    supabase.table("approval_requests").update(
+        {"soft_deleted_at": _now_iso()}
+    ).eq("id", request_id).execute()
+    _record_action(
+        supabase, request_id, user_id, user_email, "delete",
+        before_state={"status": row["status"], "title": row.get("title")},
+        comment="上席権限による削除" if (is_privileged and not is_requester) else "起票者による削除",
+    )
+    return None
 
 
 async def count_pending_for_user(supabase: Client, user_id: str) -> int:
@@ -498,9 +653,22 @@ async def get_request(
     if not res.data:
         return None
     row = res.data[0]
+    if row.get("soft_deleted_at"):
+        return None
 
-    # 閲覧権限チェック
-    if str(row.get("requester_id")) != user_id:
+    # 閲覧者（押印）一覧
+    viewers_res = (
+        supabase.table("approval_viewers")
+        .select("*")
+        .eq("request_id", request_id)
+        .order("created_at")
+        .execute()
+    )
+    viewer_rows = viewers_res.data or []
+    is_viewer = any(str(v["viewer_id"]) == user_id for v in viewer_rows)
+
+    # 閲覧権限チェック（閲覧者に指定されていれば部署に関わらず閲覧可）
+    if str(row.get("requester_id")) != user_id and not is_viewer:
         assignee_res = (
             supabase.table("approval_steps")
             .select("id")
@@ -542,6 +710,7 @@ async def get_request(
         [str(row["requester_id"])]
         + [str(s["assignee_id"]) for s in step_rows]
         + [str(a["actor_id"]) for a in action_rows]
+        + [str(v["viewer_id"]) for v in viewer_rows]
     )
     profiles = _get_profiles(supabase, all_user_ids)
 
@@ -553,6 +722,15 @@ async def get_request(
         str(s["assignee_id"]) == user_id for s in actionable
     )
     can_edit = str(row["requester_id"]) == user_id and row["status"] == "draft"
+
+    # 閲覧者の押印可否・削除可否
+    my_viewer_row = next((v for v in viewer_rows if str(v["viewer_id"]) == user_id), None)
+    can_ack = my_viewer_row is not None and not my_viewer_row.get("acknowledged_at")
+    viewer_ctx = await _get_viewer_context(supabase, user_id)
+    is_privileged = viewer_ctx["role"] in ("admin", "executive")
+    can_delete = is_privileged or (
+        str(row["requester_id"]) == user_id and row["status"] != "pending"
+    )
 
     summary = _row_to_summary(row, type_labels, profiles)
     return ApprovalRequestDetail(
@@ -579,6 +757,18 @@ async def get_request(
         ],
         can_act=can_act,
         can_edit=can_edit,
+        viewers=[
+            ApprovalViewer(
+                id=str(v["id"]),
+                viewer_id=str(v["viewer_id"]),
+                viewer_email=v.get("viewer_email") or "",
+                viewer_name=_display_name(profiles.get(str(v["viewer_id"]))),
+                acknowledged_at=v.get("acknowledged_at"),
+            )
+            for v in viewer_rows
+        ],
+        can_ack=can_ack,
+        can_delete=can_delete,
     )
 
 
@@ -619,6 +809,9 @@ async def submit_request(
 
     # ステップを作り直し（再申請時も全リセット）
     await _replace_steps(supabase, request_id, data.approvers)
+
+    # 閲覧者を確定
+    await _replace_viewers(supabase, request_id, data.viewers)
 
     # 代理設定の自動ルーティング
     await _apply_auto_delegation(supabase, request_id, data.title, user_email)
@@ -1132,3 +1325,206 @@ async def upload_attachment(
     except Exception as exc:
         logger.error("添付アップロード失敗: %s", exc)
         return None
+
+
+# =============================================================================
+# ダッシュボード
+# =============================================================================
+
+PHASE_LABELS = {
+    "draft": "起票中",
+    "pending": "承認待ち",
+    "approved": "承認済み",
+    "published": "承認済み",
+    "rejected": "却下",
+    "cancelled": "取下げ",
+    "publish_failed": "承認済み",
+}
+
+
+async def list_viewer_candidates(supabase: Client) -> List[Dict[str, str]]:
+    """閲覧者として指定可能なユーザー一覧（承認権限は不要・有効ユーザー全員）
+
+    部署ごとにグループ表示できるよう department を添え、部署順で返す。
+    """
+    try:
+        res = (
+            supabase.table("user_profiles")
+            .select("id, email, display_name, is_active, position, org_departments(name, display_order)")
+            .eq("is_active", True)
+            .order("display_name")
+            .execute()
+        )
+        return _build_user_candidates(res.data or [])
+    except Exception as exc:
+        logger.warning("閲覧者候補の取得に失敗: %s", exc)
+        return []
+
+
+async def get_dashboard(
+    supabase: Client,
+    user_id: str,
+    limit: int = 300,
+) -> ApprovalDashboardResponse:
+    """承認ワークフローのダッシュボード
+
+    - 部署別×フェーズ別の件数
+    - 案件一覧（起票者・部署・種別・フェーズ）
+    閲覧スコープは一覧と同じ（全社閲覧権限がなければ自部署＋自分の起票分）。
+    """
+    viewer = await _get_viewer_context(supabase, user_id)
+    query = (
+        supabase.table("approval_requests")
+        .select("*")
+        .is_("soft_deleted_at", "null")
+    )
+    if not viewer["view_all"]:
+        dept_id = viewer["org_department_id"]
+        if dept_id:
+            query = query.or_(
+                f"org_department_id.eq.{dept_id},requester_id.eq.{user_id}"
+            )
+        else:
+            query = query.eq("requester_id", user_id)
+    rows = (query.order("created_at", desc=True).limit(limit).execute()).data or []
+
+    # 部署名・申請者名・種別ラベルを解決
+    dept_res = supabase.table("org_departments").select("id, name").execute()
+    dept_names = {str(d["id"]): d["name"] for d in (dept_res.data or [])}
+    profiles = _get_profiles(supabase, [str(r["requester_id"]) for r in rows])
+    types = await list_request_types(supabase, include_inactive=True)
+    type_labels = {t.code: t.label for t in types}
+
+    # 部署別集計
+    dept_agg: Dict[str, Dict[str, int]] = {}
+    request_rows = []
+    for r in rows:
+        dept_name = dept_names.get(str(r.get("org_department_id") or ""), "部署未設定")
+        agg = dept_agg.setdefault(
+            dept_name, {"draft": 0, "pending": 0, "approved": 0, "rejected": 0, "total": 0}
+        )
+        status = r["status"]
+        if status == "draft":
+            agg["draft"] += 1
+        elif status == "pending":
+            agg["pending"] += 1
+        elif status in ("approved", "published", "publish_failed"):
+            agg["approved"] += 1
+        else:
+            agg["rejected"] += 1
+        agg["total"] += 1
+
+        request_rows.append(ApprovalDashboardRequestRow(
+            id=str(r["id"]),
+            title=r.get("title") or "(無題)",
+            request_type_label=type_labels.get(r["request_type"], r["request_type"]),
+            status=status,
+            phase=PHASE_LABELS.get(status, status),
+            requester_name=_display_name(profiles.get(str(r["requester_id"]))),
+            department_name=dept_name,
+            submitted_at=r.get("submitted_at"),
+            created_at=r.get("created_at"),
+        ))
+
+    by_department = [
+        ApprovalDashboardDeptRow(department_name=name, **agg)
+        for name, agg in sorted(dept_agg.items(), key=lambda x: -x[1]["total"])
+    ]
+
+    return ApprovalDashboardResponse(
+        by_department=by_department,
+        requests=request_rows,
+        total=len(request_rows),
+    )
+
+
+# =============================================================================
+# 添付画像の保存期限パージ（DB容量対策）
+# =============================================================================
+
+PURGED_IMAGE_PLACEHOLDER = (
+    '<div style="border:1px dashed #ccc; padding:8px; color:#888; font-size:12px;">'
+    '[添付画像は保存期間経過のため削除されました]</div>'
+)
+
+
+async def purge_old_attachments(
+    supabase: Client,
+    retention_days: int = 90,
+    dry_run: bool = False,
+) -> PurgeAttachmentsResult:
+    """保存期間を過ぎた稟議の添付画像を Storage から削除する
+
+    - 稟議本体（テキスト・承認履歴）は残す
+    - 本文中の <img> タグは削除告知プレースホルダに置換する
+    - 基準日: submitted_at（未申請の下書きは created_at）
+    """
+    import re as _re
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
+
+    rows = (
+        supabase.table("approval_requests")
+        .select("id, requester_id, requester_email, content, metadata, submitted_at, created_at")
+        .lt("created_at", cutoff)
+        .execute()
+    ).data or []
+
+    purged_requests = 0
+    deleted_files = 0
+
+    for r in rows:
+        ref_date = r.get("submitted_at") or r.get("created_at")
+        if not ref_date or str(ref_date) >= cutoff:
+            continue
+        metadata = r.get("metadata") or {}
+        if metadata.get("attachments_purged_at"):
+            continue
+        content = r.get("content") or {}
+        attachments = content.get("attachments") or []
+        caption_html = content.get("caption_html") or ""
+        has_images = bool(attachments) or "<img" in caption_html
+        if not has_images:
+            continue
+
+        paths = [a["path"] for a in attachments if a.get("path")]
+        if dry_run:
+            purged_requests += 1
+            deleted_files += len(paths)
+            continue
+
+        # Storage から削除
+        if paths:
+            try:
+                supabase.storage.from_(ATTACHMENTS_BUCKET).remove(paths)
+                deleted_files += len(paths)
+            except Exception as exc:
+                logger.warning("添付削除失敗 request=%s: %s", r["id"], exc)
+
+        # 本文の画像をプレースホルダに置換し、添付リストを空にする
+        new_html = _re.sub(r"<img\b[^>]*>", PURGED_IMAGE_PLACEHOLDER, caption_html)
+        new_content = {**content, "caption_html": new_html, "attachments": []}
+        new_metadata = {
+            **metadata,
+            "attachments_purged_at": _now_iso(),
+            "purged_file_count": len(paths),
+        }
+        supabase.table("approval_requests").update({
+            "content": new_content,
+            "metadata": new_metadata,
+        }).eq("id", r["id"]).execute()
+
+        _record_action(
+            supabase, str(r["id"]), str(r["requester_id"]),
+            r.get("requester_email") or "", "attachments_purged",
+            after_state={"purged_file_count": len(paths)},
+            comment=f"保存期間（{retention_days}日）経過による添付画像の自動削除",
+        )
+        purged_requests += 1
+
+    return PurgeAttachmentsResult(
+        retention_days=retention_days,
+        dry_run=dry_run,
+        purged_requests=purged_requests,
+        deleted_files=deleted_files,
+    )
