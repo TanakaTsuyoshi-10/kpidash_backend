@@ -107,6 +107,7 @@ class ApprovalStep(BaseModel):
     original_assignee_id: str
     assignee_email: str = ""
     assignee_name: Optional[str] = Field(None, description="表示名（user_profiles から解決）")
+    assignee_department: Optional[str] = Field(None, description="承認者の部署名（決裁欄の表示用）")
     status: str
     acted_at: Optional[datetime] = None
     comment: Optional[str] = None

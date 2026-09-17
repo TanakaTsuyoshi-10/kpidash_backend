@@ -71,7 +71,7 @@ def _get_profiles(supabase: Client, user_ids: List[str]) -> Dict[str, Dict[str, 
     try:
         res = (
             supabase.table("user_profiles")
-            .select("id, email, display_name")
+            .select("id, email, display_name, org_departments(name)")
             .in_("id", ids)
             .execute()
         )
@@ -79,6 +79,16 @@ def _get_profiles(supabase: Client, user_ids: List[str]) -> Dict[str, Dict[str, 
     except Exception as exc:
         logger.warning("user_profiles 取得失敗: %s", exc)
         return {}
+
+
+def _department_name(profile: Optional[Dict[str, Any]]) -> Optional[str]:
+    """プロファイル行から部署名を取り出す（未設定は None）"""
+    if not profile:
+        return None
+    dept = profile.get("org_departments")
+    if isinstance(dept, dict):
+        return dept.get("name")
+    return None
 
 
 def _display_name(profile: Optional[Dict[str, Any]]) -> str:
@@ -144,6 +154,7 @@ def _row_to_step(row: Dict[str, Any], profiles: Dict[str, Dict[str, Any]]) -> Ap
         original_assignee_id=str(row["original_assignee_id"]),
         assignee_email=row.get("assignee_email") or "",
         assignee_name=_display_name(profiles.get(str(row["assignee_id"]))),
+        assignee_department=_department_name(profiles.get(str(row["assignee_id"]))),
         status=row["status"],
         acted_at=row.get("acted_at"),
         comment=row.get("comment"),
