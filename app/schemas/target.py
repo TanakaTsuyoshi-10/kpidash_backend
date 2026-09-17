@@ -47,7 +47,9 @@ class TargetSettingResult(BaseModel):
 class StoreTargetValue(BaseModel):
     """店舗目標値（KPI別）"""
     kpi_id: str = Field(..., description="KPI ID")
-    target_id: Optional[str] = Field(None, description="目標値ID（既存の場合）")
+    # kpi_values.id は整数連番。str にすると保存済みセルがレスポンス検証で
+    # 弾かれて 500 になる（2026-09 の 17 店舗保存で顕在化した実バグ）
+    target_id: Optional[int] = Field(None, description="目標値ID（既存の場合）")
     value: Optional[Decimal] = Field(None, description="目標値")
     last_year_actual: Optional[Decimal] = Field(None, description="前年実績")
     yoy_rate: Optional[Decimal] = Field(None, description="前年比（%）")

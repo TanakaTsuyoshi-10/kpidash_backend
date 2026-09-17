@@ -3,6 +3,7 @@
 
 部門別目標設定のAPIエンドポイントを定義する。
 """
+import logging
 from datetime import date
 from typing import Optional
 
@@ -22,6 +23,8 @@ from app.schemas.target import (
 )
 from app.services import target_service
 from app.services.cache_service import cache
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -45,9 +48,7 @@ async def get_target_overview(
     try:
         return await target_service.get_target_overview(supabase, month)
     except Exception as e:
-        import traceback
-        print(f"ERROR in get_target_overview: {e}")
-        traceback.print_exc()
+        logger.exception("目標設定概要の取得に失敗 (month=%s)", month)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -74,11 +75,16 @@ async def get_store_targets(
             raise HTTPException(status_code=404, detail="店舗部門が見つかりません")
 
         department_id = dept_response.data[0]["id"]
-        return await target_service.get_target_matrix(supabase, department_id, month)
+        matrix = await target_service.get_target_matrix(supabase, department_id, month)
+        # response_model の検証を try の中で行う。FastAPI に任せると検証エラーが
+        # CORS ミドルウェアの外側で 500 になり、ブラウザには CORS エラー
+        # （Failed to fetch）として見えてしまうため。
+        return StoreTargetMatrix(**matrix)
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("店舗目標マトリックス取得に失敗 (month=%s)", month)
+        raise HTTPException(status_code=500, detail=f"店舗目標の取得に失敗しました: {e}")
 
 
 @router.post(
@@ -108,6 +114,7 @@ async def save_store_targets(
         cache.clear_prefix("dashboard")
         return result
     except Exception as e:
+        logger.exception("店舗目標の保存に失敗 (month=%s)", data.month)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -130,7 +137,8 @@ async def get_financial_targets(
     try:
         return await target_service.get_financial_targets(supabase, month)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("財務目標の取得に失敗 (month=%s)", month)
+        raise HTTPException(status_code=500, detail=f"財務目標の取得に失敗しました: {e}")
 
 
 @router.post(
@@ -155,6 +163,7 @@ async def save_financial_targets(
         cache.clear_prefix("dashboard")
         return result
     except Exception as e:
+        logger.exception("財務目標の保存に失敗 (month=%s)", data.month)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -177,7 +186,8 @@ async def get_ecommerce_targets(
     try:
         return await target_service.get_ecommerce_targets(supabase, month)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("通販目標の取得に失敗 (month=%s)", month)
+        raise HTTPException(status_code=500, detail=f"通販目標の取得に失敗しました: {e}")
 
 
 @router.post(
@@ -202,4 +212,5 @@ async def save_ecommerce_targets(
         cache.clear_prefix("dashboard")
         return result
     except Exception as e:
+        logger.exception("通販目標の保存に失敗 (month=%s)", data.month)
         raise HTTPException(status_code=500, detail=str(e))
