@@ -256,3 +256,158 @@ class TestGetFinancialTargets:
                    for i in result.cost_items)
         assert all(i.target_value is None and i.last_year_actual is None
                    for i in result.sga_items)
+
+
+# =============================================================================
+# 財務目標の保存: 利益・利益率のサーバー側計算
+# =============================================================================
+
+class _FakeWriteQuery:
+    """select/insert/update を記録する書き込み対応クエリ"""
+
+    def __init__(self, table_name, rows, writes):
+        self._table = table_name
+        self._rows = rows
+        self._writes = writes
+        self._pending = None
+
+    def __getattr__(self, name):
+        def _chain(*args, **kwargs):
+            return self
+        return _chain
+
+    def insert(self, data):
+        self._pending = ("insert", self._table, data)
+        return self
+
+    def update(self, data):
+        self._pending = ("update", self._table, data)
+        return self
+
+    def execute(self):
+        if self._pending:
+            self._writes.append(self._pending)
+            self._pending = None
+            rows = [{"id": 1}]
+        else:
+            rows = self._rows
+
+        class _Res:
+            def __init__(self, data):
+                self.data = data
+        return _Res(rows)
+
+
+class FakeWritableSupabase:
+    def __init__(self, tables=None):
+        self._tables = tables or {}
+        self.writes = []
+
+    def table(self, name):
+        return _FakeWriteQuery(name, self._tables.get(name, []), self.writes)
+
+
+def _save_summary(sales_total, cost_of_sales, sga_total):
+    """サマリーを保存し、financial_data への書き込みペイロードを返す"""
+    from app.schemas.target import FinancialTargetInput
+    from app.services.target_service import save_financial_targets
+
+    fake = FakeWritableSupabase()
+    data = FinancialTargetInput(
+        month=date(2026, 9, 1),
+        summary={
+            "sales_total": sales_total,
+            "cost_of_sales": cost_of_sales,
+            "sga_total": sga_total,
+        },
+    )
+    result = asyncio.run(save_financial_targets(fake, data))
+    assert result.errors == []
+    payload = next(w[2] for w in fake.writes if w[1] == "financial_data")
+    return payload
+
+
+class TestSaveFinancialTargetsProfitCalculation:
+    def test_profits_and_rates_computed(self):
+        """売上総利益＝売上−原価、営業利益＝粗利−販管費、率は%形式で保存"""
+        p = _save_summary(100_000_000, 40_000_000, 50_000_000)
+        assert p["gross_profit"] == 60_000_000
+        assert p["operating_profit"] == 10_000_000
+        assert p["gross_profit_rate"] == 60.0
+        assert p["operating_profit_rate"] == 10.0
+
+    def test_negative_operating_profit(self):
+        """損失（マイナスの営業利益）も計算・保存できる"""
+        p = _save_summary(100_000_000, 60_000_000, 76_480_156)
+        assert p["gross_profit"] == 40_000_000
+        assert p["operating_profit"] == -36_480_156
+        assert p["operating_profit_rate"] < 0
+
+    def test_sales_total_zero_rates_null(self):
+        """sales_total=0 のとき利益率は NULL（ZeroDivisionError にしない）"""
+        p = _save_summary(0, 1_000_000, 2_000_000)
+        assert p["gross_profit"] == -1_000_000
+        assert p["operating_profit"] == -3_000_000
+        assert p["gross_profit_rate"] is None
+        assert p["operating_profit_rate"] is None
+
+    def test_missing_inputs_store_null(self):
+        """原価・販管費が未入力なら利益・率も NULL で保存"""
+        p = _save_summary(100_000_000, None, None)
+        assert p["gross_profit"] is None
+        assert p["operating_profit"] is None
+        assert p["gross_profit_rate"] is None
+        assert p["operating_profit_rate"] is None
+
+    def test_client_supplied_profit_is_ignored(self):
+        """クライアントが gross_profit を送ってきても計算値で上書きされる"""
+        from app.schemas.target import FinancialTargetInput
+        from app.services.target_service import save_financial_targets
+
+        fake = FakeWritableSupabase()
+        data = FinancialTargetInput(
+            month=date(2026, 9, 1),
+            summary={
+                "sales_total": 100,
+                "cost_of_sales": 30,
+                "sga_total": 20,
+                "gross_profit": 999999,       # 無視される
+                "operating_profit": -999999,  # 無視される
+            },
+        )
+        asyncio.run(save_financial_targets(fake, data))
+        payload = next(w[2] for w in fake.writes if w[1] == "financial_data")
+        assert payload["gross_profit"] == 70
+        assert payload["operating_profit"] == 50
+
+    def test_get_marks_profit_items_as_calculated(self):
+        """GET で売上総利益・営業利益に is_calculated=true が付く"""
+        fake = FakeSupabase({
+            "financial_data": [],
+            "financial_cost_details": [],
+            "financial_sga_details": [],
+        })
+        result = asyncio.run(get_financial_targets(fake, date(2026, 9, 1)))
+        flags = {i.field_name: i.is_calculated for i in result.summary_items}
+        assert flags["gross_profit"] is True
+        assert flags["operating_profit"] is True
+        assert flags["sales_total"] is False
+
+
+class TestSaveThenReloadRoundTrip:
+    def test_saved_profit_appears_in_get(self):
+        """保存 → 再取得で gross_profit / operating_profit が返る"""
+        payload = _save_summary(219_000_000, 120_145_935, 99_658_318)
+        assert payload["gross_profit"] == 98_854_065
+        assert payload["operating_profit"] == -804_253
+
+        # 保存ペイロードをそのまま取得側に流し、画面表示値になることを確認
+        fake = FakeSupabase({
+            "financial_data": [[payload], []],
+            "financial_cost_details": [],
+            "financial_sga_details": [],
+        })
+        result = asyncio.run(get_financial_targets(fake, date(2026, 9, 1)))
+        items = {i.field_name: i for i in result.summary_items}
+        assert items["gross_profit"].target_value == Decimal("98854065")
+        assert items["operating_profit"].target_value == Decimal("-804253")

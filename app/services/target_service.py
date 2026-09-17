@@ -468,18 +468,19 @@ async def get_financial_targets(
     target_sales = _to_decimal(target_data.get("sales_total"))
     summary_items = []
 
-    # (DBカラム名, API用フィールド名, 表示名)
+    # (DBカラム名, API用フィールド名, 表示名, 自動計算フラグ)
+    # 売上総利益・営業利益は保存時にサーバー側で計算するため、画面では入力不可
     summary_fields = [
-        ("sales_total", "sales_total", "売上高合計"),
-        ("sales_store", "sales_store", "店舗売上高"),
-        ("sales_online", "sales_online", "通販売上高"),
-        ("cost_of_sales", "cost_of_sales", "売上原価"),
-        ("gross_profit", "gross_profit", "売上総利益"),
-        ("sg_and_a_total", "sga_total", "販管費合計"),
-        ("operating_profit", "operating_profit", "営業利益"),
+        ("sales_total", "sales_total", "売上高合計", False),
+        ("sales_store", "sales_store", "店舗売上高", False),
+        ("sales_online", "sales_online", "通販売上高", False),
+        ("cost_of_sales", "cost_of_sales", "売上原価", False),
+        ("gross_profit", "gross_profit", "売上総利益", True),
+        ("sg_and_a_total", "sga_total", "販管費合計", False),
+        ("operating_profit", "operating_profit", "営業利益", True),
     ]
 
-    for db_field, api_field, name in summary_fields:
+    for db_field, api_field, name, is_calculated in summary_fields:
         target_val = _to_decimal(target_data.get(db_field))
         actual_val = _to_decimal(actual_data.get(db_field))
         summary_items.append(FinancialTargetItem(
@@ -489,6 +490,7 @@ async def get_financial_targets(
             last_year_actual=actual_val,
             sales_ratio=_calculate_sales_ratio(target_val, target_sales) if api_field not in ["sales_total", "sales_store", "sales_online"] else None,
             yoy_rate=_calculate_yoy_rate(target_val, actual_val),
+            is_calculated=is_calculated,
         ))
 
     # 売上原価明細を構築
@@ -589,6 +591,39 @@ async def save_financial_targets(
                 if v is not None:
                     db_key = field_mapping.get(k, k)
                     summary_data[db_key] = float(v)
+
+            # 売上総利益・営業利益・各利益率は入力値ではなくサーバー側の計算値を
+            # 正とする（クライアントが値を送ってきても上書きする）。
+            # 率は実績データ（is_target=false）と同じ % 形式で格納する。
+            sales_total = summary_dict.get("sales_total")
+            cost_of_sales = summary_dict.get("cost_of_sales")
+            sga_total = summary_dict.get("sga_total")
+
+            gross_profit = (
+                sales_total - cost_of_sales
+                if sales_total is not None and cost_of_sales is not None
+                else None
+            )
+            operating_profit = (
+                gross_profit - sga_total
+                if gross_profit is not None and sga_total is not None
+                else None
+            )
+
+            def _profit_rate(profit: Optional[Decimal]) -> Optional[float]:
+                # sales_total が 0 または未入力の場合は NULL
+                if profit is None or not sales_total:
+                    return None
+                return float(profit / sales_total * 100)
+
+            summary_data["gross_profit"] = (
+                float(gross_profit) if gross_profit is not None else None
+            )
+            summary_data["operating_profit"] = (
+                float(operating_profit) if operating_profit is not None else None
+            )
+            summary_data["gross_profit_rate"] = _profit_rate(gross_profit)
+            summary_data["operating_profit_rate"] = _profit_rate(operating_profit)
 
             existing = supabase.table("financial_data").select("id").eq(
                 "month", month.isoformat()

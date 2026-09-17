@@ -138,6 +138,10 @@ class FinancialTargetItem(BaseModel):
     last_year_actual: Optional[Decimal] = Field(None, description="前年実績")
     sales_ratio: Optional[Decimal] = Field(None, description="売上対比（%）")
     yoy_rate: Optional[Decimal] = Field(None, description="前年比（%）")
+    is_calculated: bool = Field(
+        False,
+        description="サーバー側で自動計算される項目（画面では入力不可・表示のみ）",
+    )
 
 
 class FinancialTargetResponse(BaseModel):
