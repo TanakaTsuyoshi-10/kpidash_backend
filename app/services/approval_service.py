@@ -55,6 +55,10 @@ ATTACHMENTS_BUCKET = "approvals-attachments"
 # ヘルパー
 # =============================================================================
 
+# 閲覧者（押印担当）が案件を閲覧・確認できるステータス（承認完了後のみ）
+VIEWER_VISIBLE_STATUSES = ("approved", "published", "publish_failed")
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -402,13 +406,17 @@ async def _replace_steps(supabase: Client, request_id: str, approvers: List[Appr
     supabase.table("approval_steps").delete().eq("request_id", request_id).execute()
     if not approvers:
         return
+    # step_no を 1..k の連番に正規化する。同じ step_no を持つ承認者は
+    # 「同時承認グループ」（全員の承認でそのステップ完了）として扱われる。
+    distinct_steps = sorted({a.step_no for a in approvers})
+    step_map = {no: i + 1 for i, no in enumerate(distinct_steps)}
     profiles = _get_profiles(supabase, [a.assignee_id for a in approvers])
     rows = []
     for a in approvers:
         profile = profiles.get(a.assignee_id, {})
         rows.append({
             "request_id": request_id,
-            "step_no": a.step_no,
+            "step_no": step_map[a.step_no],
             "assignee_id": a.assignee_id,
             "original_assignee_id": a.assignee_id,
             "assignee_email": profile.get("email") or "",
@@ -503,7 +511,10 @@ async def list_requests(
         my_step_no = {str(s["request_id"]): s["step_no"] for s in step_rows}
         rows = [
             r for r in rows
-            if str(r["id"]) in my_unacked_ids
+            if (
+                str(r["id"]) in my_unacked_ids
+                and r["status"] in VIEWER_VISIBLE_STATUSES
+            )
             or (
                 str(r["id"]) in my_pending_ids
                 and r["status"] == "pending"
@@ -565,7 +576,15 @@ async def acknowledge_request(
     user_id: str,
     user_email: str,
 ) -> bool:
-    """閲覧者の確認（押印）を記録する"""
+    """閲覧者の確認（押印）を記録する（承認完了後のみ）"""
+    req_res = (
+        supabase.table("approval_requests")
+        .select("status")
+        .eq("id", request_id)
+        .execute()
+    )
+    if not req_res.data or req_res.data[0]["status"] not in VIEWER_VISIBLE_STATUSES:
+        return False
     res = (
         supabase.table("approval_viewers")
         .select("id, acknowledged_at")
@@ -666,9 +685,11 @@ async def get_request(
     )
     viewer_rows = viewers_res.data or []
     is_viewer = any(str(v["viewer_id"]) == user_id for v in viewer_rows)
+    # 閲覧者としての閲覧は承認完了後のみ（承認中の案件は見せない）
+    viewer_can_see = is_viewer and row["status"] in VIEWER_VISIBLE_STATUSES
 
-    # 閲覧権限チェック（閲覧者に指定されていれば部署に関わらず閲覧可）
-    if str(row.get("requester_id")) != user_id and not is_viewer:
+    # 閲覧権限チェック（閲覧者は承認完了後、部署に関わらず閲覧可）
+    if str(row.get("requester_id")) != user_id and not viewer_can_see:
         assignee_res = (
             supabase.table("approval_steps")
             .select("id")
@@ -725,7 +746,11 @@ async def get_request(
 
     # 閲覧者の押印可否・削除可否
     my_viewer_row = next((v for v in viewer_rows if str(v["viewer_id"]) == user_id), None)
-    can_ack = my_viewer_row is not None and not my_viewer_row.get("acknowledged_at")
+    can_ack = (
+        my_viewer_row is not None
+        and not my_viewer_row.get("acknowledged_at")
+        and row["status"] in VIEWER_VISIBLE_STATUSES
+    )
     viewer_ctx = await _get_viewer_context(supabase, user_id)
     is_privileged = viewer_ctx["role"] in ("admin", "executive")
     can_delete = is_privileged or (
@@ -904,6 +929,9 @@ async def _notify_current_approvers(supabase: Client, request_id: str) -> None:
     preview = (content.get("caption_plain") or "")[:200]
 
     for step in actionable:
+        # 通知済みならスキップ（同時承認グループの途中承認時の重複送信防止）
+        if step.get("notified_at"):
+            continue
         email = step.get("assignee_email")
         if not email:
             continue
