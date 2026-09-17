@@ -14,6 +14,7 @@ from typing import Optional, Dict, Any, Tuple
 
 from jose import jwt, JWTError
 from supabase import create_client
+from supabase_auth.errors import AuthApiError
 
 from app.core.config import settings
 
@@ -95,6 +96,22 @@ def _decode_token_remote(token: str) -> Dict[str, Any]:
     for attempt in range(_REMOTE_VALIDATE_RETRIES + 1):
         try:
             user_response = supabase.auth.get_user(token)
+        except AuthApiError as exc:
+            # Supabase Auth が明示的にエラー応答を返した場合。
+            # 4xx はトークン無効・期限切れの確定応答なので 401 として返し、
+            # フロント側の「リフレッシュ→リトライ」を発動させる
+            # （503 にするとフロントはリフレッシュせずリトライし続けてしまう）。
+            # 429 / 5xx のみ一時障害としてリトライに回す。
+            exc_status = getattr(exc, "status", None) or 0
+            if 400 <= exc_status < 500 and exc_status != 429:
+                raise TokenValidationError(
+                    "無効なアクセストークンです", status_code=401
+                )
+            last_error = exc
+            if attempt < _REMOTE_VALIDATE_RETRIES:
+                time.sleep(_REMOTE_VALIDATE_BACKOFF * (2 ** attempt))
+                continue
+            break
         except Exception as exc:
             # ネットワーク/サーバ由来の失敗 → 短い待機の後リトライ
             last_error = exc
