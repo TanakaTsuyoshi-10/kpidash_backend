@@ -138,6 +138,17 @@ class UserOperationResult(BaseModel):
     user_id: Optional[str] = Field(None, description="ユーザーID")
 
 
+class PasswordResetResult(BaseModel):
+    """パスワード再設定結果（管理者用）
+
+    temp_password はこのレスポンスでのみ返り、サーバー側には保存されない。
+    """
+    success: bool = Field(..., description="成功フラグ")
+    message: str = Field(..., description="メッセージ")
+    email: Optional[str] = Field(None, description="対象ユーザーのメールアドレス")
+    temp_password: Optional[str] = Field(None, description="発行した仮パスワード")
+
+
 # =============================================================================
 # 現在のユーザー情報スキーマ
 # =============================================================================

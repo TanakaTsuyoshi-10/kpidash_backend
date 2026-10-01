@@ -4,11 +4,14 @@
 利用者管理のビジネスロジックを提供する。
 Supabase Authとの連携を含む。
 """
+import logging
+import secrets
 from typing import Optional, List
 from supabase import Client
 
 from app.services.cache_service import cache
 from app.schemas.user import (
+    PasswordResetResult,
     UserProfileCreate,
     UserProfileUpdate,
     UserProfileResponse,
@@ -20,6 +23,8 @@ from app.schemas.user import (
     UserPagePermissionsResponse,
     ALL_PAGE_KEYS,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -673,4 +678,67 @@ async def update_org_department(
         name=r["name"],
         display_order=r.get("display_order", 0),
         is_active=r.get("is_active", True),
+    )
+
+
+# =============================================================================
+# パスワード再設定（管理者用）
+# =============================================================================
+
+# 紛らわしい文字（0/O/1/l/I）を除いた仮パスワード用文字セット
+_TEMP_PASSWORD_ALPHABET = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+
+def _generate_temp_password() -> str:
+    return "Gyoza-" + "".join(
+        secrets.choice(_TEMP_PASSWORD_ALPHABET) for _ in range(8)
+    )
+
+
+async def reset_user_password(
+    supabase: Client,
+    user_id: str,
+    admin_user_id: str,
+) -> PasswordResetResult:
+    """対象ユーザーのパスワードを仮パスワードに再設定する（管理者用）
+
+    仮パスワードはサーバー側に保存せず、このレスポンスで一度だけ返す。
+    監査のため「誰が誰を再設定したか」はログに残す（パスワードは残さない）。
+    """
+    profile_res = (
+        supabase.table("user_profiles")
+        .select("id, email")
+        .eq("id", user_id)
+        .execute()
+    )
+    if not profile_res.data:
+        return PasswordResetResult(success=False, message="対象の利用者が見つかりません")
+    email = profile_res.data[0].get("email")
+
+    temp_password = _generate_temp_password()
+    try:
+        auth_res = supabase.auth.admin.update_user_by_id(
+            user_id, {"password": temp_password}
+        )
+        if not getattr(auth_res, "user", None):
+            return PasswordResetResult(
+                success=False, message="パスワードの再設定に失敗しました"
+            )
+    except Exception as exc:
+        logger.exception(
+            "パスワード再設定に失敗 (admin=%s, target=%s)", admin_user_id, user_id
+        )
+        return PasswordResetResult(
+            success=False, message=f"パスワードの再設定に失敗しました: {exc}"
+        )
+
+    logger.info(
+        "パスワード再設定を実行 (admin=%s, target=%s, email=%s)",
+        admin_user_id, user_id, email,
+    )
+    return PasswordResetResult(
+        success=True,
+        message="仮パスワードを発行しました",
+        email=email,
+        temp_password=temp_password,
     )

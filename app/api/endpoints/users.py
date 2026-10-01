@@ -8,6 +8,7 @@ from supabase import Client
 
 from app.api.deps import get_current_user, get_supabase_client, get_supabase_admin
 from app.schemas.user import (
+    PasswordResetResult,
     OrgDepartment,
     OrgDepartmentCreate,
     OrgDepartmentListResponse,
@@ -325,6 +326,30 @@ async def update_user(
     if not result.success:
         raise HTTPException(status_code=400, detail=result.message)
 
+    return result
+
+
+# =============================================================================
+# パスワード再設定（管理者用）
+# =============================================================================
+
+@router.post(
+    "/{user_id}/reset-password",
+    response_model=PasswordResetResult,
+    summary="パスワード再設定",
+    description="対象利用者のパスワードを仮パスワードに再設定する。管理者権限が必要。仮パスワードはこのレスポンスでのみ返る。",
+)
+async def reset_user_password(
+    user_id: str,
+    current_user = Depends(require_admin),
+    supabase: Client = Depends(get_supabase_admin),
+):
+    """利用者のパスワードを仮パスワードに再設定する（管理者用）。"""
+    result = await user_service.reset_user_password(
+        supabase, user_id, current_user.user_id
+    )
+    if not result.success:
+        raise HTTPException(status_code=400, detail=result.message)
     return result
 
 
