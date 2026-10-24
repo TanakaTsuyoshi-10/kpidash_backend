@@ -24,13 +24,16 @@ from app.schemas.kpi import HealthResponse, APIInfo
 # FastAPIアプリケーション初期化
 # =============================================================================
 
+# 本番ではAPI仕様（Swagger/ReDoc/OpenAPI）を公開しない
+_IS_PRODUCTION = os.getenv("APP_ENV") == "production"
+
 app = FastAPI(
     title=settings.API_TITLE,
     version=settings.API_VERSION,
     description=settings.API_DESCRIPTION,
-    docs_url="/docs",      # Swagger UI
-    redoc_url="/redoc",    # ReDoc
-    openapi_url="/openapi.json",
+    docs_url=None if _IS_PRODUCTION else "/docs",
+    redoc_url=None if _IS_PRODUCTION else "/redoc",
+    openapi_url=None if _IS_PRODUCTION else "/openapi.json",
 )
 
 
@@ -174,7 +177,7 @@ async def root() -> APIInfo:
         title=settings.API_TITLE,
         version=settings.API_VERSION,
         description=settings.API_DESCRIPTION,
-        docs_url="/docs",
+        docs_url="/docs" if not _IS_PRODUCTION else "",
     )
 
 
