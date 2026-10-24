@@ -12,7 +12,8 @@ import logging
 import time
 from typing import Optional, Dict, Any, Tuple
 
-from jose import jwt, JWTError
+import jwt
+from jwt import InvalidTokenError as JWTError
 from supabase import create_client
 from supabase_auth.errors import AuthApiError
 
