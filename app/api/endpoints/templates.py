@@ -16,7 +16,8 @@ from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 from supabase import Client
 
-from app.api.deps import get_supabase_admin
+from app.api.deps import get_current_user, get_supabase_admin
+from app.schemas.kpi import User
 
 
 router = APIRouter(prefix="/templates", tags=["templates"])
@@ -421,6 +422,7 @@ def generate_manufacturing_template(year: int, month: int) -> io.BytesIO:
     """,
 )
 async def download_financial_template(
+    current_user: User = Depends(get_current_user),
     year: Optional[int] = Query(None, description="対象年"),
     month: Optional[int] = Query(None, ge=1, le=12, description="対象月"),
 ):
@@ -473,6 +475,7 @@ async def download_financial_template(
     """,
 )
 async def download_manufacturing_template(
+    current_user: User = Depends(get_current_user),
     year: Optional[int] = Query(None, description="対象年"),
     month: Optional[int] = Query(None, ge=1, le=12, description="対象月"),
 ):
@@ -528,6 +531,7 @@ async def download_manufacturing_template(
     """,
 )
 async def download_store_pl_template(
+    current_user: User = Depends(get_current_user),
     year: Optional[int] = Query(None, description="対象年"),
     month: Optional[int] = Query(None, ge=1, le=12, description="対象月"),
     department_slug: str = Query("store", description="部門スラッグ"),

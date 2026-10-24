@@ -9,7 +9,8 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, Query, HTTPException
 from supabase import Client
 
-from app.api.deps import get_supabase_client
+from app.api.deps import get_current_user, get_supabase_admin
+from app.schemas.kpi import User
 from app.schemas.dashboard import (
     DashboardResponse,
     CompanySummary,
@@ -88,7 +89,8 @@ async def get_dashboard(
         ge=1,
         le=4
     ),
-    supabase: Client = Depends(get_supabase_client),
+    current_user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase_admin),
 ) -> DashboardResponse:
     """
     ダッシュボードの全データを取得する
@@ -152,7 +154,8 @@ async def get_summary(
         ge=1,
         le=4
     ),
-    supabase: Client = Depends(get_supabase_client),
+    current_user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase_admin),
 ) -> CompanySummary:
     """
     全社サマリーを取得する
@@ -218,7 +221,8 @@ async def get_cashflow(
         ge=1,
         le=4
     ),
-    supabase: Client = Depends(get_supabase_client),
+    current_user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase_admin),
 ) -> CashFlowData:
     """
     キャッシュフローデータを取得する
@@ -268,7 +272,8 @@ async def get_chart(
         default=None,
         description="推移の終端月（YYYY-MM-DD。未指定なら現在月）",
     ),
-    supabase: Client = Depends(get_supabase_client),
+    current_user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase_admin),
 ) -> List[ChartDataPoint]:
     """
     推移グラフ用データを取得する
@@ -320,7 +325,8 @@ async def get_dashboard_alerts(
         ge=1,
         le=4
     ),
-    supabase: Client = Depends(get_supabase_client),
+    current_user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase_admin),
 ) -> List[AlertItem]:
     """
     アラート項目を取得する
@@ -360,7 +366,8 @@ async def get_dashboard_alerts(
     description="毎日変わるテキスト洞察を3〜4件取得する。店舗売上・EC・客数客単価分解など。",
 )
 async def get_highlights(
-    supabase: Client = Depends(get_supabase_client),
+    current_user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase_admin),
 ) -> HighlightResponse:
     """今日のハイライトを取得する"""
     try:
@@ -383,7 +390,8 @@ async def get_highlights(
     description="好調/注意/要対応に分類されたインサイトリストを取得する。",
 )
 async def get_insights(
-    supabase: Client = Depends(get_supabase_client),
+    current_user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase_admin),
 ) -> InsightsResponse:
     """注目ポイントを取得する"""
     try:
@@ -406,7 +414,8 @@ async def get_insights(
     description="財務・店舗・通販データの最新更新日時を取得する。",
 )
 async def get_freshness(
-    supabase: Client = Depends(get_supabase_client),
+    current_user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase_admin),
 ) -> DataFreshnessResponse:
     """データ鮮度を取得する"""
     try:
