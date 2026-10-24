@@ -4,11 +4,13 @@
 月次コメントの取得・追加・編集・削除・履歴取得APIを提供する。
 複数コメント対応・全ユーザー編集可能・編集履歴追跡。
 """
+from typing import Any, Dict
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from supabase import Client
 
-from app.api.deps import get_current_user, get_supabase_admin
+from app.api.deps import get_current_user, get_supabase_admin, get_user_app_role
 from app.schemas.kpi import User
 from app.schemas.comments import (
     SaveCommentRequest,
@@ -177,6 +179,29 @@ async def add_monthly_comment(
 # コメント編集エンドポイント
 # =============================================================================
 
+def _ensure_can_modify_comment(
+    supabase: Client, comment_id: str, current_user: User
+) -> Dict[str, Any]:
+    """コメントの編集・削除権限を確認する（作成者本人または管理者・役員のみ）。
+
+    対象が存在しない場合は None ではなく {} を返し、呼び出し側で404/204を判断する。
+    """
+    existing = supabase.table("monthly_comments").select(
+        "id, comment, created_by"
+    ).eq("id", comment_id).execute()
+    if not existing.data:
+        return {}
+    row = existing.data[0]
+    if str(row.get("created_by")) != str(current_user.user_id):
+        role = get_user_app_role(current_user.user_id)
+        if role not in ("admin", "executive"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="このコメントを編集・削除できるのは作成者本人または管理者・役員のみです",
+            )
+    return row
+
+
 @router.put(
     "/comments/{comment_id}",
     response_model=MonthlyComment,
@@ -194,18 +219,15 @@ async def update_monthly_comment(
 ) -> MonthlyComment:
     """指定IDのコメントを編集（編集履歴を自動保存）"""
     try:
-        # 1. 対象コメントの現在テキストを取得
-        existing = supabase.table("monthly_comments").select(
-            "id, comment"
-        ).eq("id", comment_id).execute()
-
-        if not existing.data or len(existing.data) == 0:
+        # 1. 対象コメントの取得と権限チェック（作成者本人または管理者・役員）
+        row = _ensure_can_modify_comment(supabase, comment_id, current_user)
+        if not row:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="コメントが見つかりません"
             )
 
-        previous_comment = existing.data[0]["comment"]
+        previous_comment = row["comment"]
 
         # 2. 編集履歴に旧テキストを保存
         supabase.table("comment_edit_history").insert({
@@ -271,12 +293,9 @@ async def delete_monthly_comment(
 ) -> Response:
     """指定IDのコメントを削除"""
     try:
-        # コメントの存在確認
-        existing = supabase.table("monthly_comments").select(
-            "id"
-        ).eq("id", comment_id).execute()
-
-        if not existing.data or len(existing.data) == 0:
+        # 存在確認と権限チェック（作成者本人または管理者・役員）
+        row = _ensure_can_modify_comment(supabase, comment_id, current_user)
+        if not row:
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
         supabase.table("monthly_comments").delete().eq(
