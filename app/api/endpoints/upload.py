@@ -462,9 +462,10 @@ async def download_template(
 )
 async def test_parse_store_csv(
     file: UploadFile = File(..., description="テストする店舗別CSV"),
+    current_user: User = Depends(get_current_user),
 ):
     """
-    店舗CSVのパース処理をテストする（認証なし）
+    店舗CSVのパース処理をテストする
     """
     content = await file.read()
     parsed = parse_store_csv(content, file.filename or "")
@@ -486,9 +487,10 @@ async def test_parse_store_csv(
 )
 async def test_parse_product_csv(
     file: UploadFile = File(..., description="テストする商品別CSV"),
+    current_user: User = Depends(get_current_user),
 ):
     """
-    商品CSVのパース処理をテストする（認証なし）
+    商品CSVのパース処理をテストする
     """
     content = await file.read()
     parsed = parse_product_csv(content, file.filename or "")
@@ -1106,7 +1108,7 @@ async def upload_receipt_journal(
     description="財務データのテンプレート構造とサンプル値を取得する（開発用）",
     tags=["テスト"],
 )
-async def get_financial_sample_data():
+async def get_financial_sample_data(current_user: User = Depends(get_current_user)):
     """
     財務データのサンプル構造を取得する
     """
@@ -1119,7 +1121,7 @@ async def get_financial_sample_data():
     description="製造データのテンプレート構造とサンプル値を取得する（開発用）",
     tags=["テスト"],
 )
-async def get_manufacturing_sample_data():
+async def get_manufacturing_sample_data(current_user: User = Depends(get_current_user)):
     """
     製造データのサンプル構造を取得する
     """

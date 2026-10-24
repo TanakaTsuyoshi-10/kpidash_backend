@@ -9,7 +9,8 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, Query, HTTPException
 from supabase import Client
 
-from app.api.deps import get_supabase_client
+from app.api.deps import get_current_user, get_supabase_admin
+from app.schemas.kpi import User
 from app.schemas.manufacturing import (
     ManufacturingAnalysisResponse,
     ManufacturingMonthlySummary,
@@ -71,7 +72,8 @@ async def get_manufacturing(
         ge=1,
         le=12
     ),
-    supabase: Client = Depends(get_supabase_client),
+    current_user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase_admin),
 ) -> ManufacturingAnalysisResponse:
     """
     製造分析データを取得する
@@ -118,7 +120,8 @@ async def get_manufacturing_summary(
         ge=1,
         le=12
     ),
-    supabase: Client = Depends(get_supabase_client),
+    current_user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase_admin),
 ) -> ManufacturingMonthlySummary:
     """
     製造月次サマリーを取得する
@@ -169,7 +172,8 @@ async def get_manufacturing_daily(
         ge=1,
         le=12
     ),
-    supabase: Client = Depends(get_supabase_client),
+    current_user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase_admin),
 ) -> List[ManufacturingDailySummary]:
     """
     製造日次データを取得する
@@ -225,7 +229,8 @@ async def get_manufacturing_comparison(
         ge=1,
         le=12
     ),
-    supabase: Client = Depends(get_supabase_client),
+    current_user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase_admin),
 ) -> ManufacturingComparison:
     """
     製造前年比較データを取得する
@@ -271,7 +276,8 @@ async def get_manufacturing_chart(
         ge=1,
         le=36
     ),
-    supabase: Client = Depends(get_supabase_client),
+    current_user: User = Depends(get_current_user),
+    supabase: Client = Depends(get_supabase_admin),
 ) -> List[ManufacturingChartData]:
     """
     製造グラフデータを取得する

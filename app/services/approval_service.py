@@ -16,6 +16,7 @@
     parallel_or  : 全員同時に回覧。誰か1人の承認で完了（残りは skipped）
 """
 import logging
+import re
 import uuid as uuid_module
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -49,6 +50,76 @@ from app.services import email_service, slack_post_service
 logger = logging.getLogger(__name__)
 
 ATTACHMENTS_BUCKET = "approvals-attachments"
+
+# 添付URL（正規形=publicパス形式。バケット自体は非公開で、配信時に署名付きURLへ
+# 書き換える。保存データには有効期限のない正規形のみを置く）
+_ATTACHMENT_URL_RE = re.compile(
+    r"https://[^\"'\s)]+/storage/v1/object/(?:public|sign)/"
+    + ATTACHMENTS_BUCKET
+    + r"/([^\"'\s)?]+)(?:\?[^\"'\s)]*)?"
+)
+_SIGNED_URL_TTL_SECONDS = 3600  # 配信用署名URLの有効期限
+
+
+def _canonical_attachment_url(path: str) -> str:
+    from app.core.config import settings
+    return f"{settings.SUPABASE_URL}/storage/v1/object/public/{ATTACHMENTS_BUCKET}/{path}"
+
+
+def normalize_attachment_content(content: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """保存用: 本文HTML・添付リスト内の署名付きURLを正規形URLに置換する"""
+    if not content:
+        return content
+    content = dict(content)
+    html = content.get("caption_html") or ""
+    if html:
+        content["caption_html"] = _ATTACHMENT_URL_RE.sub(
+            lambda m: _canonical_attachment_url(m.group(1)), html
+        )
+    atts = content.get("attachments")
+    if isinstance(atts, list):
+        content["attachments"] = [
+            {**a, "url": _canonical_attachment_url(a["path"])} if isinstance(a, dict) and a.get("path") else a
+            for a in atts
+        ]
+    return content
+
+
+def _create_signed_attachment_url(supabase: Client, path: str) -> Optional[str]:
+    try:
+        res = supabase.storage.from_(ATTACHMENTS_BUCKET).create_signed_url(
+            path, _SIGNED_URL_TTL_SECONDS
+        )
+        if isinstance(res, dict):
+            return res.get("signedURL") or res.get("signedUrl") or res.get("signed_url")
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("署名付きURL生成に失敗: %s (%s)", path, exc)
+        return None
+
+
+def sign_attachment_content(supabase: Client, content: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """配信用: 本文HTML・添付リスト内の添付URLを署名付きURL（1時間有効）に置換する"""
+    if not content:
+        return content
+    content = dict(content)
+    signed_cache: Dict[str, str] = {}
+
+    def _signed(path: str) -> str:
+        if path not in signed_cache:
+            signed_cache[path] = _create_signed_attachment_url(supabase, path) or _canonical_attachment_url(path)
+        return signed_cache[path]
+
+    html = content.get("caption_html") or ""
+    if html:
+        content["caption_html"] = _ATTACHMENT_URL_RE.sub(lambda m: _signed(m.group(1)), html)
+    atts = content.get("attachments")
+    if isinstance(atts, list):
+        content["attachments"] = [
+            {**a, "url": _signed(a["path"])} if isinstance(a, dict) and a.get("path") else a
+            for a in atts
+        ]
+    return content
 
 
 # =============================================================================
@@ -360,7 +431,7 @@ async def create_draft(
         "title": data.title or "(無題)",
         "status": "draft",
         "approval_mode": data.approval_mode or "sequential",
-        "content": data.content,
+        "content": normalize_attachment_content(data.content),
         "metadata": data.metadata,
         "requester_id": user_id,
         "requester_email": user_email,
@@ -398,7 +469,7 @@ async def update_draft(
 
     supabase.table("approval_requests").update({
         "title": data.title or "(無題)",
-        "content": data.content,
+        "content": normalize_attachment_content(data.content),
         "metadata": data.metadata,
         "approval_mode": data.approval_mode or row["approval_mode"],
     }).eq("id", request_id).execute()
@@ -771,7 +842,7 @@ async def get_request(
     summary = _row_to_summary(row, type_labels, profiles)
     return ApprovalRequestDetail(
         **summary.model_dump(),
-        content=row.get("content") or {},
+        content=sign_attachment_content(supabase, row.get("content") or {}) or {},
         metadata=row.get("metadata") or {},
         approved_at=row.get("approved_at"),
         rejected_at=row.get("rejected_at"),
@@ -833,7 +904,7 @@ async def submit_request(
     requester_ctx = await _get_viewer_context(supabase, user_id)
     supabase.table("approval_requests").update({
         "title": data.title,
-        "content": data.content,
+        "content": normalize_attachment_content(data.content),
         "metadata": data.metadata,
         "approval_mode": data.approval_mode,
         "status": "pending",
@@ -1357,9 +1428,9 @@ async def upload_attachment(
         supabase.storage.from_(ATTACHMENTS_BUCKET).upload(
             path, file_bytes, {"content-type": content_type or "image/png"}
         )
-        url = supabase.storage.from_(ATTACHMENTS_BUCKET).get_public_url(path)
-        # get_public_url が末尾に ? を付けるバージョンがあるため整形
-        url = url.rstrip("?")
+        # バケットは非公開。エディタでの即時表示用に署名付きURLを返す
+        # （保存時に正規形へ、配信時に新しい署名付きURLへ書き換えられる）
+        url = _create_signed_attachment_url(supabase, path) or _canonical_attachment_url(path)
         return {"path": path, "url": url, "filename": filename}
     except Exception as exc:
         logger.error("添付アップロード失敗: %s", exc)
@@ -1657,7 +1728,7 @@ async def duplicate_request(
         new_path = f"uploads/{uuid_module.uuid4()}.{ext}"
         try:
             supabase.storage.from_(ATTACHMENTS_BUCKET).copy(old_path, new_path)
-            new_url = supabase.storage.from_(ATTACHMENTS_BUCKET).get_public_url(new_path).rstrip("?")
+            new_url = _canonical_attachment_url(new_path)
             new_attachments.append({**att, "path": new_path, "url": new_url})
             if old_url:
                 caption_html = caption_html.replace(old_url, new_url)
